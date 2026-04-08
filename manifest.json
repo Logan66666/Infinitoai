@@ -36,7 +36,7 @@
         "https://mail.qq.com/*",
         "https://wx.mail.qq.com/*"
       ],
-      "js": ["shared/qq-refresh.js", "shared/mail-matching.js", "content/utils.js", "content/qq-mail.js"],
+      "js": ["shared/qq-refresh.js", "shared/mail-matching.js", "shared/mail-freshness.js", "content/utils.js", "content/qq-mail.js"],
       "all_frames": true,
       "run_at": "document_idle"
     },
@@ -44,7 +44,7 @@
       "matches": [
         "https://mail.163.com/*"
       ],
-      "js": ["shared/mail-matching.js", "content/utils.js", "content/mail-163.js"],
+      "js": ["shared/mail-matching.js", "shared/mail-freshness.js", "content/utils.js", "content/mail-163.js"],
       "all_frames": true,
       "run_at": "document_idle"
     },
