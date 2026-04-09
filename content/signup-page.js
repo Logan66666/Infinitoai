@@ -10,7 +10,7 @@ window.__MULTIPAGE_SIGNUP_PAGE_LOADED = true;
 
 console.log('[MultiPage:signup-page] Content script loaded on', location.href);
 const { isVerificationCodeRejectedText } = VerificationCode;
-const { isPhoneVerificationRequiredText } = PhoneVerification;
+const { getPhoneVerificationBlockedMessage, isPhoneVerificationRequiredText } = PhoneVerification;
 const { isAuthFatalErrorText } = AuthFatalErrors;
 
 // Listen for commands from Background
@@ -265,6 +265,9 @@ async function waitForVerificationSubmissionOutcome(step, hadRejectedStateBefore
     const visibleText = getVisiblePageText();
     if (isAuthFatalErrorText(visibleText)) {
       throw new Error('Auth fatal error page detected after verification submit.');
+    }
+    if (step === 7 && isPhoneVerificationRequiredText(visibleText)) {
+      throw new Error(getPhoneVerificationBlockedMessage(step));
     }
     if (isVerificationCodeRejectedText(visibleText) && !hadRejectedStateBeforeSubmit) {
       return {

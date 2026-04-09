@@ -33,7 +33,15 @@
     return PHONE_VERIFICATION_PATTERNS.some((pattern) => pattern.test(normalized));
   }
 
+  function getPhoneVerificationBlockedMessage(step) {
+    if (Number(step) === 7) {
+      return 'Step 7 blocked: phone number is required on the auth page. Please change node and retry.';
+    }
+    return `Step ${step} blocked: phone verification is required on the auth page.`;
+  }
+
   return {
+    getPhoneVerificationBlockedMessage,
     isPhoneVerificationRequiredText,
   };
 });
