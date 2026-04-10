@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  buildTopSettingPayload,
   DEFAULT_AUTO_RUN_COUNT,
   DEFAULT_AUTO_RUN_INFINITE,
   DEFAULT_AUTO_ROTATE_MAIL_PROVIDER,
@@ -34,9 +35,10 @@ test('sanitizeInfiniteAutoRun coerces values to booleans', () => {
   assert.equal(sanitizeInfiniteAutoRun(undefined), false);
 });
 
-test('sanitizeEmailSource falls back to duck for unsupported values', () => {
+test('sanitizeEmailSource falls back to tmailor for unsupported values', () => {
   assert.equal(sanitizeEmailSource('duck'), 'duck');
   assert.equal(sanitizeEmailSource('33mail'), '33mail');
+  assert.equal(sanitizeEmailSource('tmailor'), 'tmailor');
   assert.equal(sanitizeEmailSource('other'), DEFAULT_EMAIL_SOURCE);
 });
 
@@ -105,4 +107,44 @@ test('normalizePersistentSettings returns only persisted top-bar settings', () =
     PERSISTED_TOP_SETTING_KEYS,
     ['vpsUrl', 'mailProvider', 'emailSource', 'mailDomainSettings', 'inbucketHost', 'inbucketMailbox', 'autoRunCount', 'autoRunInfinite', 'autoRotateMailProvider']
   );
+});
+
+test('buildTopSettingPayload keeps the current email source and related settings before a run starts', () => {
+  assert.deepEqual(
+    buildTopSettingPayload({
+      vpsUrl: ' https://panel.example.com ',
+      mailProvider: 'qq',
+      emailSource: 'tmailor',
+      mailDomainSettings: {
+        '163': { emailDomain: ' alpha.33mail.com ' },
+        qq: { emailDomain: '@beta.33mail.com' },
+      },
+      inbucketHost: ' mailbox.test ',
+      inbucketMailbox: ' box-7 ',
+      autoRunCount: '6',
+      autoRunInfinite: 'true',
+      autoRotateMailProvider: 'false',
+    }),
+    {
+      vpsUrl: 'https://panel.example.com',
+      mailProvider: 'qq',
+      emailSource: 'tmailor',
+      mailDomainSettings: {
+        '163': { emailDomain: 'alpha.33mail.com' },
+        qq: { emailDomain: 'beta.33mail.com' },
+        inbucket: { emailDomain: '' },
+      },
+      inbucketHost: 'mailbox.test',
+      inbucketMailbox: 'box-7',
+      autoRunCount: 6,
+      autoRunInfinite: true,
+      autoRotateMailProvider: false,
+    }
+  );
+});
+
+test('sidepanel settings no longer expose VPS validation helpers', () => {
+  const settings = require('../shared/sidepanel-settings.js');
+  assert.equal('getVpsUrlValidationError' in settings, false);
+  assert.equal('isSupportedVpsOauthSuffix' in settings, false);
 });

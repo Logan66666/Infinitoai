@@ -11,7 +11,7 @@
   const DEFAULT_AUTO_RUN_INFINITE = false;
   const DEFAULT_AUTO_ROTATE_MAIL_PROVIDER = false;
   const DEFAULT_MAIL_PROVIDER = '163';
-  const DEFAULT_EMAIL_SOURCE = 'duck';
+  const DEFAULT_EMAIL_SOURCE = 'tmailor';
   const PERSISTED_TOP_SETTING_KEYS = [
     'vpsUrl',
     'mailProvider',
@@ -60,7 +60,7 @@
   }
 
   function sanitizeEmailSource(value) {
-    return value === '33mail' || value === 'duck'
+    return value === '33mail' || value === 'duck' || value === 'tmailor'
       ? value
       : DEFAULT_EMAIL_SOURCE;
   }
@@ -91,7 +91,18 @@
     };
   }
 
+  function buildTopSettingPayload(value = {}) {
+    const normalized = normalizePersistentSettings(value);
+    return {
+      ...normalized,
+      vpsUrl: normalized.vpsUrl.trim(),
+      inbucketHost: normalized.inbucketHost.trim(),
+      inbucketMailbox: normalized.inbucketMailbox.trim(),
+    };
+  }
+
   return {
+    buildTopSettingPayload,
     DEFAULT_AUTO_RUN_COUNT,
     DEFAULT_AUTO_RUN_INFINITE,
     DEFAULT_AUTO_ROTATE_MAIL_PROVIDER,

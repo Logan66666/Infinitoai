@@ -30,6 +30,7 @@ const btnClearLog = document.getElementById('btn-clear-log');
 const inputVpsUrl = document.getElementById('input-vps-url');
 const displayRunSuccess = document.getElementById('display-run-success');
 const displayRunFailure = document.getElementById('display-run-failure');
+const rowMailProvider = document.getElementById('row-mail-provider');
 const selectMailProvider = document.getElementById('select-mail-provider');
 const selectEmailSource = document.getElementById('select-email-source');
 const row33MailSettings = document.getElementById('row-33mail-settings');
@@ -43,6 +44,12 @@ const rowInbucketMailbox = document.getElementById('row-inbucket-mailbox');
 const inputInbucketMailbox = document.getElementById('input-inbucket-mailbox');
 const inputRunCount = document.getElementById('input-run-count');
 const inputRunInfinite = document.getElementById('input-run-infinite');
+  const rowTmailorDomains = document.getElementById('row-tmailor-domains');
+  const summaryTmailorWhitelist = document.getElementById('summary-tmailor-whitelist');
+  const summaryTmailorBlacklist = document.getElementById('summary-tmailor-blacklist');
+  const tbodyTmailorWhitelist = document.getElementById('tbody-tmailor-whitelist');
+  const tbodyTmailorBlacklist = document.getElementById('tbody-tmailor-blacklist');
+  const selectTmailorDomainMode = document.getElementById('select-tmailor-domain-mode');
 const mailDomainGroups = [...document.querySelectorAll('.mail-domain-group')];
 const mailDomainInputs = {
   '163': input33MailDomain163,
@@ -55,8 +62,25 @@ const {
   normalize33MailDomainSettings,
   sanitizeEmailSource,
 } = EmailAddresses;
+const {
+  buildTopSettingPayload,
+} = SidepanelSettings;
+const { shouldDisableStepButton } = ManualStepControls;
+  const {
+    normalizeTmailorDomainState,
+    sanitizeTmailorDomainMode,
+    DEFAULT_TMAILOR_DOMAIN_MODE,
+    TMAILOR_DOMAIN_MODES,
+    validateTmailorEmail,
+  } = TmailorDomains;
+  const TMAILOR_DOMAIN_MODE_LABELS = {
+    com_only: '仅 .com / 白名单',
+    whitelist_only: '仅白名单',
+  };
 const { buildToastKey, canonicalizeToastMessage, getToastDuration } = ToastFeedback;
-let mailDomainSettingsState = createDefault33MailDomainSettings();
+  let mailDomainSettingsState = createDefault33MailDomainSettings();
+  let tmailorDomainState = normalizeTmailorDomainState();
+  renderTmailorModeOptions();
 
 const ACTION_ICONS = {
   copy: `
@@ -76,6 +100,14 @@ const ACTION_ICONS = {
       <path d="M4.93 19.07l2.83-2.83"></path>
       <path d="M16.24 7.76l2.83-2.83"></path>
       <circle cx="12" cy="12" r="3"></circle>
+    </svg>
+  `,
+  pasteCheck: `
+    <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M8 4h8"></path>
+      <path d="M9 2h6v4H9z"></path>
+      <path d="M7 6H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h8"></path>
+      <path d="M14 16l2 2 4-4"></path>
     </svg>
   `,
   busy: `
@@ -197,6 +229,7 @@ async function restoreState() {
     }
     selectEmailSource.value = sanitizeEmailSource(state.emailSource);
     mailDomainSettingsState = normalize33MailDomainSettings(state.mailDomainSettings);
+    tmailorDomainState = normalizeTmailorDomainState(state.tmailorDomainState);
     inputAutoRotateMailProvider.checked = Boolean(state.autoRotateMailProvider);
     if (state.inbucketHost) {
       inputInbucketHost.value = state.inbucketHost;
@@ -224,6 +257,7 @@ async function restoreState() {
     updateProgressCounter();
     updateMailProviderUI();
     updateEmailSourceUI();
+    renderTmailorDomainTables();
     updateRunModeUI();
   } catch (err) {
     console.error('Failed to restore state:', err);
@@ -242,13 +276,17 @@ function updateAutoRunStatsDisplay(stats = {}) {
 }
 
 function updateMailProviderUI() {
+  const source = sanitizeEmailSource(selectEmailSource.value);
   const useInbucket = selectMailProvider.value === 'inbucket';
+  rowMailProvider.style.display = source === 'tmailor' ? 'none' : '';
   rowInbucketHost.style.display = useInbucket ? '' : 'none';
   rowInbucketMailbox.style.display = useInbucket ? '' : 'none';
 }
 
 function getEmailSourceLabel() {
-  return selectEmailSource.value === '33mail' ? '33mail' : 'Duck';
+  if (selectEmailSource.value === '33mail') return '33mail';
+  if (selectEmailSource.value === 'tmailor') return 'TMailor';
+  return 'Duck';
 }
 
 function getCurrentProviderLabel() {
@@ -270,24 +308,123 @@ function update33MailGroupUI() {
 function updateEmailSourceUI() {
   const emailSource = sanitizeEmailSource(selectEmailSource.value);
   const is33Mail = emailSource === '33mail';
+  const isTmailor = emailSource === 'tmailor';
   const currentProvider = selectMailProvider.value;
   const isGroupedMailProvider = currentProvider === '163' || currentProvider === 'qq';
 
   row33MailSettings.style.display = is33Mail ? '' : 'none';
   row33MailRotate.style.display = is33Mail ? '' : 'none';
+  rowTmailorDomains.style.display = isTmailor ? '' : 'none';
   update33MailGroupUI();
+  updateMailProviderUI();
 
   inputEmail.placeholder = is33Mail
     ? isGroupedMailProvider
       ? 'Step 3 will generate a 33mail address automatically'
       : '33mail uses the 163 / QQ groups'
+    : isTmailor
+      ? 'Step 3 will generate a TMailor address automatically'
     : 'Paste DuckDuckGo email';
   renderFetchButton(false);
   autoContinueHint.textContent = is33Mail
     ? inputAutoRotateMailProvider.checked
       ? 'Auto mode will rotate the 163 / QQ 33mail groups by run'
       : 'Select 163 or QQ, configure its domain, then continue'
+    : isTmailor
+      ? 'Use Auto to generate a TMailor address, then continue'
     : 'Use Auto to fetch Duck email, or paste manually, then continue';
+}
+
+function createDomainRowHtml(domain, stats) {
+  const successCount = Math.max(0, Number.parseInt(String(stats?.successCount ?? 0), 10) || 0);
+  const failureCount = Math.max(0, Number.parseInt(String(stats?.failureCount ?? 0), 10) || 0);
+  return `
+    <tr>
+      <td>${escapeHtml(domain)}</td>
+      <td class="num">${successCount}</td>
+      <td class="num">${failureCount}</td>
+    </tr>
+  `;
+}
+
+  function renderDomainRows(tbody, domains) {
+    if (domains.length === 0) {
+      tbody.innerHTML = '<tr><td class="empty" colspan="3">暂无数据</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = domains
+      .map((domain) => createDomainRowHtml(domain, tmailorDomainState.stats?.[domain] || {}))
+      .join('');
+  }
+
+  function renderTmailorModeOptions() {
+    if (!selectTmailorDomainMode) {
+      return;
+    }
+
+    selectTmailorDomainMode.innerHTML = TMAILOR_DOMAIN_MODES
+      .map((mode) => `<option value="${mode}">${TMAILOR_DOMAIN_MODE_LABELS[mode] || mode}</option>`)
+      .join('');
+  }
+
+  async function persistTmailorDomainMode(rawMode) {
+    if (!selectTmailorDomainMode) {
+      return;
+    }
+
+    const nextMode = sanitizeTmailorDomainMode(rawMode);
+    if (nextMode === tmailorDomainState.mode) {
+      selectTmailorDomainMode.value = nextMode;
+      return;
+    }
+
+    tmailorDomainState = normalizeTmailorDomainState({
+      ...tmailorDomainState,
+      mode: nextMode,
+    });
+
+    selectTmailorDomainMode.value = nextMode;
+    renderTmailorDomainTables();
+
+    try {
+      await chrome.runtime.sendMessage({
+        type: 'SAVE_TMAILOR_DOMAIN_STATE',
+        source: 'sidepanel',
+        payload: { mode: nextMode },
+      });
+    } catch (err) {
+      console.error('Failed to save TMailor domain mode:', err);
+    }
+  }
+
+  function renderTmailorDomainTables() {
+    const normalizedState = normalizeTmailorDomainState(tmailorDomainState);
+    tmailorDomainState = normalizedState;
+    if (selectTmailorDomainMode) {
+      selectTmailorDomainMode.value = normalizedState.mode;
+    }
+
+    const whitelistDomains = [...normalizedState.whitelist].sort((left, right) => left.localeCompare(right));
+  const blacklistDomains = [...normalizedState.blacklist].sort((left, right) => left.localeCompare(right));
+  const whitelistTotals = whitelistDomains.reduce((acc, domain) => {
+    const stats = normalizedState.stats?.[domain] || {};
+    acc.success += Math.max(0, Number.parseInt(String(stats.successCount ?? 0), 10) || 0);
+    acc.failure += Math.max(0, Number.parseInt(String(stats.failureCount ?? 0), 10) || 0);
+    return acc;
+  }, { success: 0, failure: 0 });
+  const blacklistTotals = blacklistDomains.reduce((acc, domain) => {
+    const stats = normalizedState.stats?.[domain] || {};
+    acc.success += Math.max(0, Number.parseInt(String(stats.successCount ?? 0), 10) || 0);
+    acc.failure += Math.max(0, Number.parseInt(String(stats.failureCount ?? 0), 10) || 0);
+    return acc;
+  }, { success: 0, failure: 0 });
+
+  summaryTmailorWhitelist.textContent = `白名单域名 (${whitelistDomains.length}) · 成 ${whitelistTotals.success} / 败 ${whitelistTotals.failure}`;
+  summaryTmailorBlacklist.textContent = `黑名单域名 (${blacklistDomains.length}) · 成 ${blacklistTotals.success} / 败 ${blacklistTotals.failure}`;
+
+  renderDomainRows(tbodyTmailorWhitelist, whitelistDomains);
+  renderDomainRows(tbodyTmailorBlacklist, blacklistDomains);
 }
 
 function updateRunModeUI() {
@@ -296,11 +433,17 @@ function updateRunModeUI() {
 }
 
 function renderFetchButton(isBusy = false) {
-  btnFetchEmail.innerHTML = isBusy ? ACTION_ICONS.busy : ACTION_ICONS.fetch;
+  const emailSource = sanitizeEmailSource(selectEmailSource.value);
+  const idleIcon = emailSource === 'tmailor' ? ACTION_ICONS.pasteCheck : ACTION_ICONS.fetch;
+  btnFetchEmail.innerHTML = isBusy ? ACTION_ICONS.busy : idleIcon;
   btnFetchEmail.classList.toggle('is-busy', isBusy);
   btnFetchEmail.title = isBusy
-    ? 'Generating or fetching email...'
-    : sanitizeEmailSource(selectEmailSource.value) === '33mail'
+    ? emailSource === 'tmailor'
+      ? 'Pasting and validating email...'
+      : 'Generating or fetching email...'
+    : emailSource === 'tmailor'
+      ? 'Paste and validate email'
+      : emailSource === '33mail'
       ? 'Generate email'
       : 'Fetch email';
   btnFetchEmail.setAttribute('aria-label', btnFetchEmail.title);
@@ -385,16 +528,7 @@ function updateButtonStates() {
   for (let step = 1; step <= 9; step++) {
     const btn = document.querySelector(`.step-btn[data-step="${step}"]`);
     if (!btn) continue;
-
-    if (anyRunning) {
-      btn.disabled = true;
-    } else if (step === 1) {
-      btn.disabled = false;
-    } else {
-      const prevStatus = statuses[step - 1];
-      const currentStatus = statuses[step];
-      btn.disabled = !(prevStatus === 'completed' || currentStatus === 'failed' || currentStatus === 'completed' || currentStatus === 'stopped');
-    }
+    btn.disabled = shouldDisableStepButton({ anyRunning, step, statuses });
   }
 
   updateStopButtonState(anyRunning || autoContinueBar.style.display !== 'none');
@@ -508,14 +642,68 @@ async function fetchEmailAddress() {
       : response.mailProvider === '163'
         ? '163'
         : getCurrentProviderLabel();
+    const isGeneratedSource = response.emailSource === '33mail' || response.emailSource === 'tmailor';
     showToast(
-      `${response.emailSource === '33mail' ? 'Generated' : 'Fetched'} ${response.email}${response.emailSource === '33mail' ? ` · ${providerLabel}` : ''}`,
+      `${isGeneratedSource ? 'Ready' : 'Fetched'} ${response.email}${response.emailSource === '33mail' ? ` · ${providerLabel}` : ''}`,
       'success',
       3500
     );
     return response.email;
   } catch (err) {
-    showToast(`${getEmailSourceLabel()} failed: ${err.message}`, 'error');
+    showToast(`${getEmailSourceLabel()} error: ${err.message}`, 'error');
+    throw err;
+  } finally {
+    btnFetchEmail.disabled = false;
+    renderFetchButton(false);
+  }
+}
+
+function getClipboardEmailCandidate(rawText) {
+  const text = String(rawText || '').trim();
+  const match = text.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
+  return (match?.[0] || text).trim();
+}
+
+async function pasteAndValidateTmailorEmail() {
+  btnFetchEmail.disabled = true;
+  renderFetchButton(true);
+
+  try {
+    const clipboardText = await navigator.clipboard.readText();
+    const candidate = getClipboardEmailCandidate(clipboardText);
+    const validation = validateTmailorEmail(tmailorDomainState, candidate);
+
+    if (!validation.ok) {
+      if (validation.reason === 'invalid_email') {
+        throw new Error('No valid email found in clipboard.');
+      }
+
+      const modeLabel = tmailorDomainState.mode === 'whitelist_only' ? '当前仅白名单模式' : '当前域名规则';
+      throw new Error(`${validation.domain || 'unknown domain'} not allowed by ${modeLabel}.`);
+    }
+
+    inputEmail.value = validation.email;
+    await chrome.runtime.sendMessage({
+      type: 'SAVE_EMAIL',
+      source: 'sidepanel',
+      payload: { email: validation.email },
+    });
+
+    if (autoContinueBar.style.display !== 'none') {
+      autoContinueBar.style.display = 'none';
+      await chrome.runtime.sendMessage({
+        type: 'RESUME_AUTO_RUN',
+        source: 'sidepanel',
+        payload: { email: validation.email },
+      });
+      showToast(`Accepted ${validation.email} · resumed`, 'success', 3000);
+      return validation.email;
+    }
+
+    showToast(`Accepted ${validation.email}`, 'success', 2600);
+    return validation.email;
+  } catch (err) {
+    showToast(`Paste check failed: ${err.message}`, 'error');
     throw err;
   } finally {
     btnFetchEmail.disabled = false;
@@ -534,9 +722,10 @@ function syncPasswordToggleLabel() {
 document.querySelectorAll('.step-btn').forEach(btn => {
   btn.addEventListener('click', async () => {
     const step = Number(btn.dataset.step);
+    await persistCurrentTopSettings();
     if (step === 3) {
       const email = inputEmail.value.trim();
-      if (sanitizeEmailSource(selectEmailSource.value) !== '33mail' && !email) {
+      if (!['33mail', 'tmailor'].includes(sanitizeEmailSource(selectEmailSource.value)) && !email) {
         showToast('Please paste email address or use Auto first', 'warn');
         return;
       }
@@ -548,6 +737,11 @@ document.querySelectorAll('.step-btn').forEach(btn => {
 });
 
 btnFetchEmail.addEventListener('click', async () => {
+  await persistCurrentTopSettings();
+  if (sanitizeEmailSource(selectEmailSource.value) === 'tmailor') {
+    await pasteAndValidateTmailorEmail().catch(() => {});
+    return;
+  }
   await fetchEmailAddress().catch(() => {});
 });
 
@@ -567,18 +761,14 @@ btnTogglePassword.addEventListener('click', () => {
 btnStop.addEventListener('click', async () => {
   btnStop.disabled = true;
   await chrome.runtime.sendMessage({ type: 'STOP_FLOW', source: 'sidepanel', payload: {} });
-  showToast('Stopping current flow...', 'warn', 4000);
+  showToast('Stopping...', 'warn', 2200);
 });
 
 // Auto Run
 btnAutoRun.addEventListener('click', async () => {
   const totalRuns = parseInt(inputRunCount.value) || 1;
   const infiniteMode = inputRunInfinite.checked;
-  await chrome.runtime.sendMessage({
-    type: 'SAVE_SETTING',
-    source: 'sidepanel',
-    payload: { autoRunCount: totalRuns, autoRunInfinite: infiniteMode },
-  });
+  await persistCurrentTopSettings({ autoRunCount: totalRuns, autoRunInfinite: infiniteMode });
   btnAutoRun.disabled = true;
   inputRunInfinite.disabled = true;
   updateRunModeUI();
@@ -588,8 +778,8 @@ btnAutoRun.addEventListener('click', async () => {
 
 btnAutoContinue.addEventListener('click', async () => {
   const email = inputEmail.value.trim();
-  if (sanitizeEmailSource(selectEmailSource.value) !== '33mail' && !email) {
-    showToast('Please fetch or paste an email address first!', 'warn');
+  if (!['33mail', 'tmailor'].includes(sanitizeEmailSource(selectEmailSource.value)) && !email) {
+    showToast('Fetch or paste an email first', 'warn');
     return;
   }
   autoContinueBar.style.display = 'none';
@@ -632,6 +822,25 @@ async function saveTopSetting(payload) {
     source: 'sidepanel',
     payload,
   });
+}
+
+function collectTopSettingPayload(overrides = {}) {
+  return buildTopSettingPayload({
+    vpsUrl: inputVpsUrl.value,
+    mailProvider: selectMailProvider.value,
+    emailSource: selectEmailSource.value,
+    mailDomainSettings: mailDomainSettingsState,
+    inbucketHost: inputInbucketHost.value,
+    inbucketMailbox: inputInbucketMailbox.value,
+    autoRunCount: inputRunCount.value,
+    autoRunInfinite: inputRunInfinite.checked,
+    autoRotateMailProvider: inputAutoRotateMailProvider.checked,
+    ...overrides,
+  });
+}
+
+async function persistCurrentTopSettings(overrides = {}) {
+  await saveTopSetting(collectTopSettingPayload(overrides));
 }
 
 // Save settings on change
@@ -687,15 +896,21 @@ inputInbucketHost.addEventListener('change', async () => {
   await saveTopSetting({ inbucketHost: inputInbucketHost.value.trim() });
 });
 
-inputRunCount.addEventListener('input', async () => {
-  const count = parseInt(inputRunCount.value, 10);
-  await saveTopSetting({ autoRunCount: Number.isFinite(count) && count > 0 ? count : DEFAULT_AUTO_RUN_COUNT });
-});
+  inputRunCount.addEventListener('input', async () => {
+    const count = parseInt(inputRunCount.value, 10);
+    await saveTopSetting({ autoRunCount: Number.isFinite(count) && count > 0 ? count : DEFAULT_AUTO_RUN_COUNT });
+  });
 
-inputRunInfinite.addEventListener('change', async () => {
-  updateRunModeUI();
-  await saveTopSetting({ autoRunInfinite: inputRunInfinite.checked });
-});
+  inputRunInfinite.addEventListener('change', async () => {
+    updateRunModeUI();
+    await saveTopSetting({ autoRunInfinite: inputRunInfinite.checked });
+  });
+
+  if (selectTmailorDomainMode) {
+    selectTmailorDomainMode.addEventListener('change', () => {
+      void persistTmailorDomainMode(selectTmailorDomainMode.value);
+    });
+  }
 
 // ============================================================
 // Listen for Background broadcasts
@@ -759,6 +974,10 @@ chrome.runtime.onMessage.addListener((message) => {
         updateMailProviderUI();
         updateEmailSourceUI();
       }
+      if (message.payload.tmailorDomainState) {
+        tmailorDomainState = normalizeTmailorDomainState(message.payload.tmailorDomainState);
+        renderTmailorDomainTables();
+      }
       if (message.payload.oauthUrl) {
         displayOauthUrl.textContent = message.payload.oauthUrl;
         displayOauthUrl.classList.add('has-value');
@@ -791,7 +1010,7 @@ chrome.runtime.onMessage.addListener((message) => {
           btnAutoRun.innerHTML = `Waiting${runLabel}`;
           updateStopButtonState(true);
           if (waitLabel) {
-            showToast(`33mail 两组都达到上限，约 ${waitLabel} 后自动继续`, 'warn', 7000);
+            showToast(`33mail 达到上限，约 ${waitLabel} 后继续`, 'warn', 3600);
           }
           break;
         }
@@ -803,7 +1022,7 @@ chrome.runtime.onMessage.addListener((message) => {
           updateStopButtonState(false);
           updateRunModeUI();
           if (summaryToast) {
-            showToast(summaryToast, 'success', 7000);
+            showToast(summaryToast, 'success', 4200);
           }
           break;
         case 'stopped':
@@ -814,7 +1033,7 @@ chrome.runtime.onMessage.addListener((message) => {
           updateStopButtonState(false);
           updateRunModeUI();
           if (summaryToast) {
-            showToast(summaryToast, 'warn', 7000);
+            showToast(summaryToast, 'warn', 3600);
           }
           break;
       }

@@ -55,11 +55,11 @@
           <span id="display-run-failure" class="run-stat-pill failure">失败 0</span>
         </div>
       </div>
-      <div class="data-row">
+      <div class="data-row data-row-stack">
         <span class="data-label">VPS</span>
         <input type="password" id="input-vps-url" class="data-input" placeholder="http://ip:port/management.html#/oauth" />
       </div>
-      <div class="data-row">
+      <div class="data-row" id="row-mail-provider">
         <span class="data-label">Mail</span>
         <select id="select-mail-provider" class="data-select">
           <option value="163">163 Mail (mail.163.com)</option>
@@ -72,6 +72,7 @@
         <select id="select-email-source" class="data-select">
           <option value="duck">Duck Address</option>
           <option value="33mail">33mail</option>
+          <option value="tmailor">TMailor</option>
         </select>
       </div>
       <div class="data-row data-row-stack" id="row-33mail-settings" style="display:none;">
@@ -129,6 +130,46 @@
       <div class="data-row">
         <span class="data-label">Callback</span>
         <span id="display-localhost-url" class="data-value mono truncate">Waiting...</span>
+      </div>
+      <div class="data-row data-row-stack" id="row-tmailor-domains" style="display:none;">
+        <span class="data-label">TMailor</span>
+        <div class="tmailor-domain-content">
+          <div class="tmailor-mode-control">
+            <select id="select-tmailor-domain-mode" class="data-select data-select-inline"></select>
+          </div>
+          <div class="tmailor-domain-panels">
+          <details class="domain-panel">
+            <summary id="summary-tmailor-whitelist">白名单域名</summary>
+            <div class="domain-table-wrap">
+              <table class="domain-table">
+                <thead>
+                  <tr>
+                    <th>域名</th>
+                    <th>成功</th>
+                    <th>失败</th>
+                  </tr>
+                </thead>
+                <tbody id="tbody-tmailor-whitelist"></tbody>
+              </table>
+            </div>
+          </details>
+          <details class="domain-panel">
+            <summary id="summary-tmailor-blacklist">黑名单域名</summary>
+            <div class="domain-table-wrap">
+              <table class="domain-table">
+                <thead>
+                  <tr>
+                    <th>域名</th>
+                    <th>成功</th>
+                    <th>失败</th>
+                  </tr>
+                </thead>
+                <tbody id="tbody-tmailor-blacklist"></tbody>
+              </table>
+            </div>
+          </details>
+        </div>
+      </div>
       </div>
     </div>
     <div id="status-bar" class="status-bar">
@@ -206,6 +247,9 @@
 
   <div id="toast-container"></div>
   <script src="../shared/email-addresses.js"></script>
+  <script src="../shared/manual-step-controls.js"></script>
+  <script src="../shared/sidepanel-settings.js"></script>
+  <script src="../shared/tmailor-domains.js"></script>
   <script src="../shared/toast-feedback.js"></script>
   <script src="sidepanel.js"></script>
 </body>
