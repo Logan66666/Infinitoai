@@ -12,6 +12,7 @@ console.log('[MultiPage:signup-page] Content script loaded on', location.href);
 const { isVerificationCodeRejectedText } = VerificationCode;
 const { getPhoneVerificationBlockedMessage, isPhoneVerificationRequiredText } = PhoneVerification;
 const { isAuthFatalErrorText } = AuthFatalErrors;
+const { getUnsupportedEmailBlockedMessage, isUnsupportedEmailBlockingStep, isUnsupportedEmailText } = UnsupportedEmail;
 
 // Listen for commands from Background
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -266,6 +267,9 @@ async function waitForVerificationSubmissionOutcome(step, hadRejectedStateBefore
     if (isAuthFatalErrorText(visibleText)) {
       throw new Error('Auth fatal error page detected after verification submit.');
     }
+    if (isUnsupportedEmailBlockingStep(step) && isUnsupportedEmailText(visibleText)) {
+      throw new Error(getUnsupportedEmailBlockedMessage(step));
+    }
     if (step === 7 && isPhoneVerificationRequiredText(visibleText)) {
       throw new Error(getPhoneVerificationBlockedMessage(step));
     }
@@ -312,6 +316,7 @@ function getAuthPageState() {
   return {
     hasFatalError: isAuthFatalErrorText(visibleText),
     requiresPhoneVerification: isPhoneVerificationRequiredText(visibleText),
+    hasUnsupportedEmail: isUnsupportedEmailText(visibleText),
     url: location.href,
   };
 }
@@ -329,6 +334,50 @@ function hasVisibleVerificationInput() {
   ];
 
   return selectors.some((selector) => Array.from(document.querySelectorAll(selector)).some(isElementVisible));
+}
+
+function hasVisibleProfileFormInput() {
+  const selectors = [
+    'input[name="name"]',
+    'input[name="age"]',
+    'input[name="birthday"]',
+    '[role="spinbutton"][data-type="year"]',
+    '[role="spinbutton"][data-type="month"]',
+    '[role="spinbutton"][data-type="day"]',
+  ];
+
+  return selectors.some((selector) => Array.from(document.querySelectorAll(selector)).some(isElementVisible));
+}
+
+async function waitForProfileSubmissionOutcome(step, timeout = 7000) {
+  const startUrl = location.href;
+  const start = Date.now();
+
+  while (Date.now() - start < timeout) {
+    throwIfStopped();
+
+    const visibleText = getVisiblePageText();
+    if (isUnsupportedEmailBlockingStep(step) && isUnsupportedEmailText(visibleText)) {
+      throw new Error(getUnsupportedEmailBlockedMessage(step));
+    }
+    if (isAuthFatalErrorText(visibleText)) {
+      throw new Error('Auth fatal error page detected after profile submit.');
+    }
+
+    if (location.href !== startUrl || !hasVisibleProfileFormInput()) {
+      return {
+        accepted: true,
+        reason: 'page-advanced',
+      };
+    }
+
+    await sleep(250);
+  }
+
+  return {
+    accepted: true,
+    reason: 'no-blocker-detected',
+  };
 }
 
 // ============================================================
@@ -634,13 +683,13 @@ async function step5_fillNameBirthday(payload) {
   const completeBtn = document.querySelector('button[type="submit"]')
     || await waitForElementByText('button', /完成|create|continue|finish|done|agree/i, 5000).catch(() => null);
 
-  // Report complete BEFORE submit (page navigates to add-phone after this)
-  reportComplete(5);
-
   if (completeBtn) {
     await humanPause(500, 1300);
     simulateClick(completeBtn);
     log('Step 5: Clicked "完成帐户创建"');
+    await waitForProfileSubmissionOutcome(5);
   }
+
+  reportComplete(5);
 }
 })();

@@ -75,6 +75,7 @@ test('signup-page content script can be evaluated twice safely', () => {
     VerificationCode: { isVerificationCodeRejectedText() { return false; } },
     PhoneVerification: { isPhoneVerificationRequiredText() { return false; } },
     AuthFatalErrors: { isAuthFatalErrorText() { return false; } },
+    UnsupportedEmail: { isUnsupportedEmailText() { return false; } },
     resetStopState() {},
     isStopError() { return false; },
     log() {},

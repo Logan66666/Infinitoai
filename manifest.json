@@ -28,7 +28,7 @@
         "https://auth.openai.com/*",
         "https://accounts.openai.com/*"
       ],
-      "js": ["shared/verification-code.js", "shared/phone-verification.js", "shared/auth-fatal-errors.js", "content/utils.js", "content/signup-page.js"],
+      "js": ["shared/verification-code.js", "shared/phone-verification.js", "shared/auth-fatal-errors.js", "shared/unsupported-email.js", "content/utils.js", "content/signup-page.js"],
       "run_at": "document_idle"
     },
     {
@@ -53,6 +53,13 @@
         "https://duckduckgo.com/email/settings/autofill*"
       ],
       "js": ["content/utils.js", "content/duck-mail.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://tmailor.com/*"
+      ],
+      "js": ["shared/mail-matching.js", "shared/mail-freshness.js", "shared/latest-mail.js", "content/utils.js", "content/tmailor-mail.js"],
       "run_at": "document_idle"
     }
   ],
