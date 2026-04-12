@@ -634,6 +634,105 @@ test('tmailor returns to the inbox after step 7 reads the code from the mail det
   assert.equal(state.historyBackCalls, 1);
 });
 
+test('tmailor falls back to the mailbox home page when history.back leaves the detail page open', async () => {
+  const context = createContext();
+  const state = context.__state;
+  context.location.href = 'https://tmailor.com/inbox?emailid=detail-stuck';
+  state.bodyText = '你的 ChatGPT 代码为 ******';
+
+  context.document.querySelector = (selector) => {
+    if (selector === 'h1') {
+      return { textContent: '你的 ChatGPT 代码为 009087' };
+    }
+    return null;
+  };
+  context.document.querySelectorAll = () => [];
+  context.sleep = async () => {};
+
+  loadTmailorScript(context);
+
+  const hooks = context.__MULTIPAGE_TMAILOR_TEST_HOOKS;
+  assert.ok(hooks?.readCodeFromMailRow, 'expected tmailor test hooks to expose readCodeFromMailRow');
+
+  const row = {
+    combinedText: '你的 ChatGPT 代码为 ******',
+    element: {
+      getAttribute() {
+        return null;
+      },
+      getBoundingClientRect() {
+        return { width: 120, height: 24 };
+      },
+      textContent: '你的 ChatGPT 代码为 ******',
+    },
+  };
+
+  const code = await hooks.readCodeFromMailRow(row, 4);
+
+  assert.equal(code, '009087');
+  assert.equal(state.historyBackCalls, 1);
+  assert.equal(context.location.href, 'https://tmailor.com/');
+});
+
+test('tmailor clicks the dismiss button root when the visible Close text is only a child node', async () => {
+  const context = createContext();
+  const state = context.__state;
+  state.dialogVisible = false;
+  state.adVisible = true;
+  state.closeVisible = true;
+
+  const dismissRoot = {
+    id: 'dismiss-button-element',
+    tagName: 'BUTTON',
+    textContent: 'Close',
+    getBoundingClientRect() {
+      return { width: 88, height: 32 };
+    },
+  };
+  const dismissLabel = {
+    tagName: 'DIV',
+    textContent: 'Close',
+    closest(selector) {
+      if (selector === '#dismiss-button-element, button, [role="button"], a') {
+        return dismissRoot;
+      }
+      return null;
+    },
+    getBoundingClientRect() {
+      return { width: 64, height: 20 };
+    },
+  };
+
+  context.document.querySelector = (selector) => {
+    if (selector === '#dismiss-button-element > div') {
+      return dismissLabel;
+    }
+    if (selector === '#dismiss-button-element') {
+      return dismissRoot;
+    }
+    return null;
+  };
+  context.document.querySelectorAll = () => [];
+  context.simulateClick = (target) => {
+    state.clicked += 1;
+    state.lastClicked = target;
+    if (target === dismissRoot) {
+      state.adVisible = false;
+      state.closeVisible = false;
+    }
+  };
+  context.sleep = async () => {};
+
+  loadTmailorScript(context);
+  const hooks = context.__MULTIPAGE_TMAILOR_TEST_HOOKS;
+  assert.ok(hooks?.handleMonetizationVideoAd, 'expected tmailor to expose handleMonetizationVideoAd');
+
+  const handled = await hooks.handleMonetizationVideoAd(100);
+
+  assert.equal(handled, true);
+  assert.equal(state.lastClicked, dismissRoot);
+});
+
 test('tmailor can open an already visible matching inbox row on the first attempt instead of waiting for refresh-only fallback', async () => {
   const context = createContext();
   context.MailMatching.getStepMailMatchProfile = () => ({
@@ -932,6 +1031,126 @@ test('tmailor ignores a stale hidden turnstile response when the mailbox itself 
       return [newEmailButton];
     }
     return [];
+  };
+
+  loadTmailorScript(context);
+  const hooks = context.__MULTIPAGE_TMAILOR_TEST_HOOKS;
+  assert.ok(hooks?.detectTmailorPageState, 'expected tmailor to expose detectTmailorPageState');
+
+  const state = hooks.detectTmailorPageState();
+
+  assert.equal(state.kind, 'mailbox_idle');
+});
+
+test('tmailor ignores hidden new-email firewall markup until the dialog is actually shown', () => {
+  const context = createContext();
+  context.document.body.innerText = 'Your Temp Mail Address Copy this address and use it for OTPs, sign-ups, and verifications. New Email Reuse Email';
+
+  const hiddenFirewallRoot = {
+    tagName: 'DIV',
+    id: 'newEmailFW',
+    className: 'hidden',
+    parentElement: null,
+    getAttribute(name) {
+      if (name === 'aria-hidden') {
+        return 'true';
+      }
+      return null;
+    },
+    getBoundingClientRect() {
+      return { left: 0, top: 0, width: 0, height: 0 };
+    },
+  };
+  const hiddenCaptchaShell = {
+    tagName: 'DIV',
+    className: 'cf-turnstile',
+    parentElement: hiddenFirewallRoot,
+    getBoundingClientRect() {
+      return { left: 0, top: 0, width: 300, height: 80 };
+    },
+  };
+  const hiddenResponseInput = {
+    tagName: 'INPUT',
+    value: '',
+    parentElement: hiddenCaptchaShell,
+    getBoundingClientRect() {
+      return { left: 0, top: 0, width: 0, height: 0 };
+    },
+  };
+  const hiddenConfirmButton = {
+    tagName: 'BUTTON',
+    id: 'btnNewEmailForm',
+    textContent: 'Confirm',
+    parentElement: hiddenFirewallRoot,
+    getBoundingClientRect() {
+      return { left: 0, top: 0, width: 120, height: 40 };
+    },
+    getAttribute(name) {
+      if (name === 'title') {
+        return 'Create a new email address';
+      }
+      return null;
+    },
+  };
+  const currentEmailInput = {
+    tagName: 'INPUT',
+    value: '',
+    disabled: false,
+    parentElement: null,
+    getAttribute(name) {
+      if (name === 'aria-label') {
+        return 'Your Temp Mail Address';
+      }
+      return null;
+    },
+    getBoundingClientRect() {
+      return { left: 180, top: 420, width: 360, height: 44 };
+    },
+  };
+  const newEmailButton = {
+    tagName: 'BUTTON',
+    id: 'btnNewEmail',
+    textContent: 'New Email',
+    parentElement: null,
+    getBoundingClientRect() {
+      return { left: 180, top: 500, width: 120, height: 40 };
+    },
+  };
+
+  context.document.querySelector = (selector) => {
+    if (selector === 'input[name="currentEmailAddress"]') {
+      return currentEmailInput;
+    }
+    if (selector === '#btnNewEmail') {
+      return newEmailButton;
+    }
+    if (selector === '#btnNewEmailForm') {
+      return hiddenConfirmButton;
+    }
+    if (selector === '.cf-turnstile' || selector.includes('.cf-turnstile') || selector.includes('cf-turnstile-response')) {
+      return hiddenCaptchaShell;
+    }
+    return null;
+  };
+  context.document.querySelectorAll = (selector) => {
+    if (selector === 'button, [role="button"], a, summary') {
+      return [newEmailButton, hiddenConfirmButton];
+    }
+    return [];
+  };
+  context.getComputedStyle = (element) => {
+    if (element === hiddenFirewallRoot) {
+      return {
+        display: 'none',
+        visibility: 'hidden',
+        opacity: '0',
+      };
+    }
+    return {
+      display: 'block',
+      visibility: 'visible',
+      opacity: '1',
+    };
   };
 
   loadTmailorScript(context);

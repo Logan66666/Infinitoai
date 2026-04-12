@@ -76,9 +76,13 @@ function isAllowedDomain(domainState, domain) {
 
 function isElementVisible(el) {
   if (!el || !document.contains(el)) return false;
-  const style = window.getComputedStyle ? window.getComputedStyle(el) : null;
-  if (style && (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0')) {
-    return false;
+  let current = el;
+  while (current) {
+    const style = window.getComputedStyle ? window.getComputedStyle(current) : null;
+    if (style && (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0')) {
+      return false;
+    }
+    current = current.parentElement || null;
   }
   const rect = typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : null;
   return !rect || (rect.width > 0 && rect.height > 0);
@@ -525,6 +529,12 @@ function isIgnoredCloseControl(el) {
 function findBlockingAdCloseButton() {
   const dismissClose = document.querySelector('#dismiss-button-element > div');
   if (isElementVisible(dismissClose)) {
+    const dismissRoot = typeof dismissClose.closest === 'function'
+      ? dismissClose.closest('#dismiss-button-element, button, [role="button"], a')
+      : null;
+    if (isElementVisible(dismissRoot)) {
+      return dismissRoot;
+    }
     return dismissClose;
   }
 
@@ -626,6 +636,12 @@ function findMonetizationVideoPlayButton() {
 function findMonetizationVideoCloseButton() {
   const exactMatch = document.querySelector('#dismiss-button-element > div');
   if (isElementVisible(exactMatch)) {
+    const dismissRoot = typeof exactMatch.closest === 'function'
+      ? exactMatch.closest('#dismiss-button-element, button, [role="button"], a')
+      : null;
+    if (isElementVisible(dismissRoot)) {
+      return dismissRoot;
+    }
     return exactMatch;
   }
 
@@ -1331,6 +1347,13 @@ async function leaveMailDetailView() {
   if (window.history && typeof window.history.back === 'function') {
     window.history.back();
     await sleepWithMailboxPatrol(900, { reason: 'leaving the mail detail view' });
+    if (!/emailid=/i.test(location.href)) {
+      return true;
+    }
+
+    log('TMailor: Browser back left the mail detail page open, navigating back to the mailbox home page.', 'info');
+    location.href = 'https://tmailor.com/';
+    await sleepWithMailboxPatrol(1200, { reason: 'returning to the mailbox home page' });
     return true;
   }
 
