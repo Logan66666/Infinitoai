@@ -168,8 +168,10 @@ async function handlePollEmail(step, payload) {
       const subject = latestMatch.querySelector('span.da0')?.textContent || '';
       const ariaLabel = (latestMatch.getAttribute('aria-label') || '').toLowerCase();
       const emailTime = parseEmailDate(latestMatch);
+      const isFallbackMatch = useFallback && existingMailIds.has(id);
+      const shouldTreatUnknownTimeAsFresh = !isFallbackMatch && !emailTime;
 
-      if (!isMailFresh(emailTime, { now, filterAfterTimestamp })) {
+      if (!shouldTreatUnknownTimeAsFresh && !isMailFresh(emailTime, { now, filterAfterTimestamp })) {
         log(`Step ${step}: Skipping stale email (date: ${emailTime ? new Date(emailTime).toLocaleString() : 'unknown'})`, 'info');
       } else {
         const code = extractVerificationCode(subject + ' ' + ariaLabel);
@@ -182,7 +184,7 @@ async function handlePollEmail(step, payload) {
         } else {
           seenCodes.add(code);
           persistSeenCodes();
-          const source = useFallback && existingMailIds.has(id) ? 'fallback' : 'new';
+          const source = isFallbackMatch ? 'fallback' : 'new';
           log(`Step ${step}: Code found: ${code} (${source}, subject: ${subject.slice(0, 40)})`, 'ok');
 
           await deleteEmail(latestMatch, step);
