@@ -2505,24 +2505,41 @@ async function executeStep5(state) {
 // Step 6: Login ChatGPT (Background opens tab, chatgpt.js handles login)
 // ============================================================
 
+async function refreshOauthUrlForManualStep6(state) {
+  await addLog('Step 6: Manual run detected. Refreshing the VPS OAuth link before login...', 'info');
+  const waitForRefresh = waitForStepComplete(1, 120000);
+  await executeStep1(state);
+  const refreshPayload = await waitForRefresh;
+  const latestState = await getState();
+  return {
+    ...latestState,
+    oauthUrl: refreshPayload?.oauthUrl || latestState.oauthUrl || '',
+  };
+}
+
 async function executeStep6(state) {
-  if (!state.oauthUrl) {
-    throw new Error('No OAuth URL. Complete step 1 first.');
-  }
   if (!state.email) {
     throw new Error('No email. Complete step 3 first.');
   }
 
+  const effectiveState = manualRunActive
+    ? await refreshOauthUrlForManualStep6(state)
+    : state;
+
+  if (!effectiveState.oauthUrl) {
+    throw new Error('No OAuth URL. Complete step 1 first.');
+  }
+
   await addLog(`Step 6: Opening OAuth URL for login...`);
   // Reuse the signup-page tab — navigate it to the OAuth URL
-  await reuseOrCreateTab('signup-page', state.oauthUrl);
+  await reuseOrCreateTab('signup-page', effectiveState.oauthUrl);
 
   // signup-page.js will inject (same auth.openai.com domain) and handle login
   await sendToContentScript('signup-page', {
     type: 'EXECUTE_STEP',
     step: 6,
     source: 'background',
-    payload: { email: state.email, password: state.password },
+    payload: { email: effectiveState.email, password: effectiveState.password },
   });
 }
 

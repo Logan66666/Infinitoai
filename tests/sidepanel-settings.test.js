@@ -7,6 +7,8 @@ const {
   DEFAULT_AUTO_RUN_INFINITE,
   DEFAULT_AUTO_ROTATE_MAIL_PROVIDER,
   DEFAULT_EMAIL_SOURCE,
+  getAutoContinueHint,
+  getEmailInputPlaceholder,
   PERSISTED_TOP_SETTING_KEYS,
   normalizePersistentSettings,
   sanitizeAutoRunCount,
@@ -140,6 +142,27 @@ test('buildTopSettingPayload keeps the current email source and related settings
       autoRunInfinite: true,
       autoRotateMailProvider: false,
     }
+  );
+});
+
+test('getEmailInputPlaceholder updates the TMailor placeholder to describe the manual New Email step', () => {
+  assert.equal(
+    getEmailInputPlaceholder({
+      emailSource: 'tmailor',
+      mailProvider: '163',
+    }),
+    'Paste the generated TMailor address here manually'
+  );
+});
+
+test('getAutoContinueHint updates the TMailor hint to describe clicking New Email first', () => {
+  assert.equal(
+    getAutoContinueHint({
+      emailSource: 'tmailor',
+      mailProvider: '163',
+      autoRotateMailProvider: false,
+    }),
+    'Click New Email on TMailor, then paste the generated address into Email. Auto run will resume automatically.'
   );
 });
 

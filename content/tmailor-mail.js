@@ -211,14 +211,14 @@ function findCloudflareConfirmButton() {
 }
 
 function findCloudflareCheckboxTarget() {
-  const visibleChallengeContainer = findVisibleCloudflareChallengeContainer();
-  if (visibleChallengeContainer) {
-    return visibleChallengeContainer;
-  }
-
   const iframe = findVisibleCloudflareChallengeIframe();
   if (isElementVisible(iframe)) {
     return iframe;
+  }
+
+  const visibleChallengeContainer = findVisibleCloudflareChallengeContainer();
+  if (visibleChallengeContainer) {
+    return visibleChallengeContainer;
   }
 
   const textTarget = Array.from(document.querySelectorAll('label, button, div, span')).find((el) => {
@@ -257,7 +257,10 @@ function findVisibleCloudflareChallengeContainer() {
 
   let current = responseInput.parentElement || null;
   while (current) {
-    if (isElementVisible(current) && looksLikeCloudflareChallengeShell(current)) {
+    if (!isElementVisible(current)) {
+      return null;
+    }
+    if (looksLikeCloudflareChallengeShell(current)) {
       return current;
     }
     current = current.parentElement || null;
@@ -808,9 +811,11 @@ async function ensureCloudflareChallengeClearedOrThrow(timeoutMs = 12000) {
 async function waitForCloudflareConfirm(timeoutMs = 12000) {
   const start = Date.now();
   const gracePeriodMs = Math.min(1500, timeoutMs);
+  const delayedConfirmRetryMs = 6000;
   let sawChallenge = false;
   let challengeResolvedAt = 0;
   let lastCheckboxAttemptAt = 0;
+  let lastConfirmAttemptAt = 0;
   let loggedChallengeDetected = false;
   let loggedConfirmDisabled = false;
   let loggedWaitingForCheckbox = false;
@@ -819,6 +824,10 @@ async function waitForCloudflareConfirm(timeoutMs = 12000) {
   let hasAttemptedCheckboxClick = false;
   let loggedChallengeDetails = false;
   let loggedResponseTokenDetected = false;
+
+  function hasVerificationCompletionSignal(tokenLength) {
+    return Number(tokenLength) > 0;
+  }
 
   while (Date.now() - start < timeoutMs) {
     throwIfStopped();
@@ -850,7 +859,7 @@ async function waitForCloudflareConfirm(timeoutMs = 12000) {
       continue;
     }
 
-    if (!challengeTextVisible && sawChallenge && (hasAttemptedCheckboxClick || loggedConfirmDisabled)) {
+    if (!challengeTextVisible && sawChallenge && (hasAttemptedCheckboxClick || loggedConfirmDisabled) && hasVerificationCompletionSignal(responseTokenLength)) {
       const confirmButton = findCloudflareConfirmButton();
       if (confirmButton && !isElementDisabled(confirmButton)) {
         if (!challengeResolvedAt) {
@@ -858,6 +867,17 @@ async function waitForCloudflareConfirm(timeoutMs = 12000) {
           log('TMailor: Cloudflare challenge shell remains, but verification looks complete', 'info');
         }
         log(`TMailor: Cloudflare verification detected (tokenLength=${responseTokenLength}), clicking Confirm`, 'info');
+        simulateClick(confirmButton);
+        await sleep(1200);
+        return true;
+      }
+    }
+
+    if (hasAttemptedCheckboxClick && hasVerificationCompletionSignal(responseTokenLength) && Date.now() - lastConfirmAttemptAt >= delayedConfirmRetryMs) {
+      const confirmButton = findCloudflareConfirmButton();
+      if (confirmButton && !isElementDisabled(confirmButton)) {
+        lastConfirmAttemptAt = Date.now();
+        log(`TMailor: Cloudflare Confirm became clickable after checkbox verification, retrying Confirm (${describeElementForLog(confirmButton, 'confirm')})`, 'info');
         simulateClick(confirmButton);
         await sleep(1200);
         return true;
@@ -998,6 +1018,9 @@ async function waitForMailboxControls(timeout = 20000) {
   let lastStateKind = '';
   while (Date.now() - start < timeout) {
     throwIfStopped();
+    if (/emailid=/i.test(location.href)) {
+      return;
+    }
     const state = detectTmailorPageState();
     if (state.kind !== lastStateKind) {
       lastStateKind = state.kind;
@@ -1283,6 +1306,16 @@ function shouldReturnToInboxAfterDetailRead(step) {
   return step === 4 || step === 7;
 }
 
+function shouldReturnToMailboxHomeAfterOpeningDetail(step) {
+  return step === 7;
+}
+
+async function returnToMailboxHomePageFromDetail() {
+  await sleepWithMailboxPatrol(3000, { reason: 'leaving the login email detail view before returning home' });
+  location.href = 'https://tmailor.com/';
+  await sleepWithMailboxPatrol(1200, { reason: 'returning to the mailbox home page' });
+}
+
 function readCodeFromCurrentDetailPage(step, payload = {}) {
   if (!/emailid=/i.test(location.href)) {
     return null;
@@ -1369,6 +1402,11 @@ async function readCodeFromMailRow(row, step = 0) {
   log(`TMailor: Opening matched inbox row (${row?.sender || 'unknown sender'} | ${row?.subject || 'unknown subject'})`, 'info');
   await clickMailRow(row);
   await settleMailDetailInterruptions();
+  if (shouldReturnToMailboxHomeAfterOpeningDetail(step)) {
+    log('TMailor: Step 7 opened the login email detail. Waiting briefly, then returning to the mailbox home page instead of reading the detail view.', 'info');
+    await returnToMailboxHomePageFromDetail();
+    return null;
+  }
   code = await waitForCodeInPage(8000, 250);
   if (code) {
     if (shouldReturnToInboxAfterDetailRead(step)) {
@@ -1415,6 +1453,12 @@ async function handlePollEmail(step, payload) {
     assertNoFatalMailboxError();
     if (attempt > 1) {
       await refreshInbox();
+    }
+
+    if (shouldReturnToMailboxHomeAfterOpeningDetail(step) && /emailid=/i.test(location.href)) {
+      log('TMailor: Step 7 resumed on the login email detail page. Waiting briefly, then returning to the mailbox home page before continuing inbox polling.', 'info');
+      await returnToMailboxHomePageFromDetail();
+      continue;
     }
 
     const currentDetailResult = readCodeFromCurrentDetailPage(step, payload);

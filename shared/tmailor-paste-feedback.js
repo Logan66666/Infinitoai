@@ -34,6 +34,24 @@
     return autoContinueVisible ? 'resume_auto_run' : 'execute_step_3';
   }
 
+  function shouldAttemptAutoRunResumeFromInput({ autoContinueVisible = false, email = '' } = {}) {
+    const normalizedEmail = String(email || '').trim();
+    return Boolean(
+      autoContinueVisible
+      && /^[^\s@]+@[^\s@]+\.[^\s@]+$/i.test(normalizedEmail)
+    );
+  }
+
+  function shouldExecuteStep3AfterValidation({ successAction = '', resumeSucceeded = false } = {}) {
+    if (successAction === 'execute_step_3') {
+      return true;
+    }
+    if (successAction === 'resume_auto_run') {
+      return !resumeSucceeded;
+    }
+    return false;
+  }
+
   function shouldFallbackToStep3AfterResume(result) {
     return !Boolean(result && result.resumed === true);
   }
@@ -43,7 +61,9 @@
     getClipboardReadDeniedMessage,
     getNoTmailorEmailFoundMessage,
     getTmailorValidationSuccessAction,
+    shouldExecuteStep3AfterValidation,
     getTmailorValidationModeLabel,
+    shouldAttemptAutoRunResumeFromInput,
     shouldFallbackToStep3AfterResume,
     shouldRetryTmailorFetchAfterValidationFailure,
   };

@@ -582,7 +582,7 @@ test('tmailor returns to the inbox after step 4 reads the code from the mail det
   assert.equal(state.historyBackCalls, 1);
 });
 
-test('tmailor returns to the inbox after step 7 reads the code from the mail detail page', async () => {
+test('tmailor step 7 returns to the mailbox home page after opening the mail detail', async () => {
   const context = createContext();
   const state = context.__state;
   context.location.href = 'https://tmailor.com/inbox?emailid=detail-456';
@@ -630,8 +630,63 @@ test('tmailor returns to the inbox after step 7 reads the code from the mail det
 
   const code = await hooks.readCodeFromMailRow(row, 7);
 
-  assert.equal(code, '665544');
-  assert.equal(state.historyBackCalls, 1);
+  assert.equal(code, null);
+  assert.equal(context.location.href, 'https://tmailor.com/');
+  assert.equal(state.historyBackCalls, 0);
+});
+
+test('tmailor handlePollEmail can resume on the mail detail page after reinjection, return home, and continue polling step 7', async () => {
+  const context = createContext();
+  const state = context.__state;
+  context.location.href = 'https://tmailor.com/inbox?emailid=detail-reinject-step7';
+  state.bodyText = 'Your ChatGPT code is 112233';
+  let rowQueryCount = 0;
+
+  context.document.querySelector = (selector) => {
+    if (selector === 'h1') {
+      return { textContent: 'Your ChatGPT code is 112233' };
+    }
+    return null;
+  };
+  context.document.querySelectorAll = (selector) => {
+    if (selector === 'button, [role="button"], a, summary') {
+      return [];
+    }
+    if (selector === 'tr') {
+      rowQueryCount += 1;
+      if (context.location.href === 'https://tmailor.com/' && rowQueryCount >= 1) {
+        return [{
+          textContent: 'noreply@tm.openai.com\nYour ChatGPT code is 112233\n10:00',
+          getAttribute() {
+            return null;
+          },
+          getBoundingClientRect() {
+            return { width: 120, height: 24 };
+          },
+        }];
+      }
+    }
+    return [];
+  };
+  context.sleep = async () => {};
+
+  loadTmailorScript(context);
+
+  const hooks = context.__MULTIPAGE_TMAILOR_TEST_HOOKS;
+  assert.ok(hooks?.handlePollEmail, 'expected tmailor test hooks to expose handlePollEmail');
+
+  const result = await hooks.handlePollEmail(7, {
+    subjectFilters: ['ChatGPT code'],
+    senderFilters: ['openai'],
+    targetEmail: 'nga16eu@fbhotro.com',
+    maxAttempts: 2,
+    intervalMs: 0,
+    filterAfterTimestamp: 0,
+  });
+
+  assert.equal(result.code, '112233');
+  assert.equal(context.location.href, 'https://tmailor.com/');
+  assert.equal(state.historyBackCalls, 0);
 });
 
 test('tmailor falls back to the mailbox home page when history.back leaves the detail page open', async () => {
@@ -1162,6 +1217,125 @@ test('tmailor ignores hidden new-email firewall markup until the dialog is actua
   assert.equal(state.kind, 'mailbox_idle');
 });
 
+test('tmailor ignores hidden firewall copy inherited through a visible mailbox section ancestor', () => {
+  const context = createContext();
+
+  const mailboxSection = {
+    tagName: 'SECTION',
+    id: 'actionEmailAddressHome',
+    className: 'tm-max-box mx-auto',
+    parentElement: null,
+    get textContent() {
+      return [
+        'Your Temp Mail Address',
+        'Copy this address and use it for OTPs, sign-ups, and verification emails.',
+        'Please verify that you are not a robot.',
+        'Confirm',
+      ].join(' ');
+    },
+    getBoundingClientRect() {
+      return { left: 140, top: 366, width: 740, height: 330 };
+    },
+  };
+  const hiddenFirewallRoot = {
+    tagName: 'DIV',
+    id: 'newEmailFW',
+    className: 'hidden',
+    parentElement: mailboxSection,
+    getAttribute(name) {
+      if (name === 'aria-hidden') {
+        return 'true';
+      }
+      return null;
+    },
+    getBoundingClientRect() {
+      return { left: 0, top: 0, width: 0, height: 0 };
+    },
+  };
+  const hiddenCaptchaShell = {
+    tagName: 'DIV',
+    className: 'html-captcha',
+    parentElement: hiddenFirewallRoot,
+    getBoundingClientRect() {
+      return { left: 0, top: 0, width: 0, height: 0 };
+    },
+  };
+  const hiddenResponseInput = {
+    tagName: 'INPUT',
+    value: '',
+    parentElement: hiddenCaptchaShell,
+    getBoundingClientRect() {
+      return { left: 0, top: 0, width: 0, height: 0 };
+    },
+  };
+  const currentEmailInput = {
+    tagName: 'INPUT',
+    value: '',
+    disabled: false,
+    parentElement: mailboxSection,
+    getAttribute(name) {
+      if (name === 'aria-label') {
+        return 'Your Temp Mail Address';
+      }
+      return null;
+    },
+    getBoundingClientRect() {
+      return { left: 180, top: 420, width: 360, height: 44 };
+    },
+  };
+  const newEmailButton = {
+    tagName: 'BUTTON',
+    id: 'btnNewEmail',
+    textContent: 'New Email',
+    parentElement: mailboxSection,
+    getBoundingClientRect() {
+      return { left: 180, top: 500, width: 120, height: 40 };
+    },
+  };
+
+  context.document.body.innerText = 'Your Temp Mail Address Copy this address and use it for OTPs, sign-ups, and verification emails. New Email';
+  context.document.querySelector = (selector) => {
+    if (selector === 'input[name="currentEmailAddress"]') {
+      return currentEmailInput;
+    }
+    if (selector === '#btnNewEmail') {
+      return newEmailButton;
+    }
+    if (selector.includes('cf-turnstile-response')) {
+      return hiddenResponseInput;
+    }
+    return null;
+  };
+  context.document.querySelectorAll = (selector) => {
+    if (selector === 'button, [role="button"], a, summary') {
+      return [newEmailButton];
+    }
+    return [];
+  };
+  context.getComputedStyle = (element) => {
+    if (element === hiddenFirewallRoot || element === hiddenCaptchaShell || element === hiddenResponseInput) {
+      return {
+        display: 'none',
+        visibility: 'hidden',
+        opacity: '0',
+      };
+    }
+    return {
+      display: 'block',
+      visibility: 'visible',
+      opacity: '1',
+    };
+  };
+
+  loadTmailorScript(context);
+  const hooks = context.__MULTIPAGE_TMAILOR_TEST_HOOKS;
+  assert.ok(hooks?.detectTmailorPageState, 'expected tmailor to expose detectTmailorPageState');
+
+  const state = hooks.detectTmailorPageState();
+
+  assert.equal(state.kind, 'mailbox_idle');
+});
+
 test('tmailor detects the in-page turnstile challenge state when Cloudflare confirm is embedded in the mailbox view', () => {
   const context = createContext();
   context.document.body.innerText = 'Create New Email Please verify that you are not a robot. Confirm Inbox Refresh';
@@ -1320,6 +1494,7 @@ test('tmailor waits for the challenge checkbox before clicking Confirm', async (
   const context = createContext();
   context.document.body.innerText = 'Please verify that you are not a robot.';
   let challengeVisible = true;
+  let responseToken = '';
 
   const checkboxFrame = {
     tagName: 'IFRAME',
@@ -1351,7 +1526,10 @@ test('tmailor waits for the challenge checkbox before clicking Confirm', async (
       return confirmButton;
     }
     if (selector.includes('iframe[src*="challenges.cloudflare.com"]')) {
-      return checkboxFrame;
+      return challengeVisible ? checkboxFrame : null;
+    }
+    if (selector.includes('input[name="cf-turnstile-response"]')) {
+      return { value: responseToken };
     }
     return null;
   };
@@ -1367,6 +1545,7 @@ test('tmailor waits for the challenge checkbox before clicking Confirm', async (
     if (message.type === 'DEBUGGER_CLICK_AT') {
       confirmButton.disabled = false;
       challengeVisible = false;
+      responseToken = 'verified-token';
       context.document.body.innerText = '';
     }
     const response = { ok: true };
@@ -1405,6 +1584,266 @@ test('tmailor waits for the challenge checkbox before clicking Confirm', async (
     context.__state.logs.some((entry) => /clicking Confirm/i.test(entry.message)),
     'expected a confirm click log'
   );
+});
+
+test('tmailor retries Confirm after checkbox success when the challenge shell stays visible', async () => {
+  const context = createContext();
+  const state = context.__state;
+  let now = 0;
+  let responseToken = '';
+  context.Date = class extends Date {
+    static now() {
+      return now;
+    }
+  };
+  context.document.body.innerText = 'Please verify that you are not a robot.';
+
+  const checkboxFrame = {
+    tagName: 'IFRAME',
+    src: 'https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/turnstile/if/ov2/av0/rcv/123',
+    title: 'Widget containing a Cloudflare security challenge',
+    getBoundingClientRect() {
+      return { left: 120, top: 240, width: 280, height: 80 };
+    },
+  };
+
+  const confirmButton = {
+    id: 'btnNewEmailForm',
+    tagName: 'BUTTON',
+    textContent: 'Confirm',
+    disabled: true,
+    getAttribute(name) {
+      if (name === 'aria-disabled') {
+        return this.disabled ? 'true' : 'false';
+      }
+      return null;
+    },
+    getBoundingClientRect() {
+      return { width: 80, height: 24 };
+    },
+  };
+
+  context.document.querySelector = (selector) => {
+    if (selector === '#btnNewEmailForm') {
+      return confirmButton;
+    }
+    if (selector.includes('iframe[src*="challenges.cloudflare.com"]')) {
+      return checkboxFrame;
+    }
+    if (selector.includes('input[name="cf-turnstile-response"]')) {
+      return { value: responseToken };
+    }
+    return null;
+  };
+  context.document.querySelectorAll = (selector) => {
+    if (selector === 'button, [role="button"], a, summary') {
+      return [confirmButton];
+    }
+    return [];
+  };
+  context.chrome.runtime.sendMessage = (message, callback) => {
+    state.runtimeMessages = state.runtimeMessages || [];
+    state.runtimeMessages.push(message);
+    const response = { ok: true };
+    if (typeof callback === 'function') {
+      callback(response);
+    }
+    return Promise.resolve(response);
+  };
+  context.sleep = async (ms = 0) => {
+    now += ms;
+    if (now >= 6000) {
+      confirmButton.disabled = false;
+      responseToken = 'verified-token';
+    }
+  };
+
+  loadTmailorScript(context);
+  const hooks = context.__MULTIPAGE_TMAILOR_TEST_HOOKS;
+  assert.ok(hooks?.waitForCloudflareConfirm, 'expected tmailor to expose waitForCloudflareConfirm');
+
+  const handled = await hooks.waitForCloudflareConfirm(9000);
+
+  assert.equal(handled, true);
+  assert.ok(state.runtimeMessages?.some((entry) => entry.type === 'DEBUGGER_CLICK_AT'));
+  assert.equal(state.clicked, 1);
+  assert.equal(state.lastClicked?.id, 'btnNewEmailForm');
+  assert.ok(
+    state.logs.some((entry) => /clicking Confirm/i.test(entry.message)),
+    'expected a delayed confirm click log'
+  );
+});
+
+test('tmailor does not click Confirm while the turnstile shell is still visible with an empty response token', async () => {
+  const context = createContext();
+  const state = context.__state;
+  let now = 0;
+  context.Date = class extends Date {
+    static now() {
+      return now;
+    }
+  };
+
+  const turnstileContainer = {
+    tagName: 'DIV',
+    className: 'cf-turnstile',
+    getBoundingClientRect() {
+      return { left: 360, top: 463, width: 300, height: 80 };
+    },
+  };
+
+  const confirmButton = {
+    id: 'btnNewEmailForm',
+    tagName: 'BUTTON',
+    textContent: 'Confirm',
+    disabled: false,
+    getAttribute(name) {
+      if (name === 'aria-disabled') {
+        return 'false';
+      }
+      return null;
+    },
+    getBoundingClientRect() {
+      return { left: 449, top: 555, width: 122, height: 41 };
+    },
+  };
+
+  context.document.body.innerText = '';
+  context.document.querySelector = (selector) => {
+    if (selector === '#btnNewEmailForm') {
+      return confirmButton;
+    }
+    if (selector === '.cf-turnstile' || selector.includes('.cf-turnstile') || selector.includes('.html-captcha')) {
+      return turnstileContainer;
+    }
+    if (selector.includes('input[name="cf-turnstile-response"]')) {
+      return { value: '' };
+    }
+    return null;
+  };
+  context.document.querySelectorAll = (selector) => {
+    if (selector === 'button, [role="button"], a, summary') {
+      return [confirmButton];
+    }
+    return [];
+  };
+  context.chrome.runtime.sendMessage = (message, callback) => {
+    state.runtimeMessages = state.runtimeMessages || [];
+    state.runtimeMessages.push(message);
+    const response = { ok: true };
+    if (typeof callback === 'function') {
+      callback(response);
+    }
+    return Promise.resolve(response);
+  };
+  context.sleep = async (ms = 0) => {
+    now += ms;
+  };
+
+  loadTmailorScript(context);
+  const hooks = context.__MULTIPAGE_TMAILOR_TEST_HOOKS;
+  assert.ok(hooks?.waitForCloudflareConfirm, 'expected tmailor to expose waitForCloudflareConfirm');
+
+  const handled = await hooks.waitForCloudflareConfirm(2500);
+
+  assert.equal(handled, false);
+  assert.ok(state.runtimeMessages?.some((entry) => entry.type === 'DEBUGGER_CLICK_AT'));
+  assert.equal(state.clicked, 0);
+  assert.ok(
+    !state.logs.some((entry) => /retrying Confirm/i.test(entry.message)),
+    'should not retry Confirm while the response token is still empty'
+  );
+});
+
+test('tmailor prefers the visible Cloudflare iframe over the outer turnstile container for checkbox clicks', async () => {
+  const context = createContext();
+  const state = context.__state;
+  let challengeVisible = true;
+
+  const turnstileContainer = {
+    tagName: 'DIV',
+    className: 'cf-turnstile h-[80px] flex items-center justify-center',
+    getBoundingClientRect() {
+      return { left: 360, top: 463, width: 300, height: 80 };
+    },
+  };
+
+  const iframe = {
+    tagName: 'IFRAME',
+    src: 'https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/turnstile/if/ov2/av0/rcv/123',
+    title: 'Widget containing a Cloudflare security challenge',
+    getAttribute(name) {
+      if (name === 'src') return this.src;
+      if (name === 'title') return this.title;
+      return null;
+    },
+    getBoundingClientRect() {
+      return { left: 405, top: 478, width: 210, height: 50 };
+    },
+  };
+
+  const confirmButton = {
+    id: 'btnNewEmailForm',
+    tagName: 'BUTTON',
+    textContent: 'Confirm',
+    disabled: true,
+    getAttribute(name) {
+      if (name === 'aria-disabled') {
+        return this.disabled ? 'true' : 'false';
+      }
+      return null;
+    },
+    getBoundingClientRect() {
+      return { left: 449, top: 555, width: 122, height: 41 };
+    },
+  };
+
+  context.document.body.innerText = 'Please verify that you are not a robot.';
+  context.document.querySelector = (selector) => {
+    if (selector === '#btnNewEmailForm') {
+      return confirmButton;
+    }
+    if (selector === '.cf-turnstile' || selector.includes('.cf-turnstile') || selector.includes('.html-captcha')) {
+      return challengeVisible ? turnstileContainer : null;
+    }
+    if (selector.includes('iframe[src*="challenges.cloudflare.com"]') || selector.includes('iframe[title*="Cloudflare"]') || selector.includes('iframe[title*="Widget containing"]')) {
+      return challengeVisible ? iframe : null;
+    }
+    return null;
+  };
+  context.document.querySelectorAll = (selector) => {
+    if (selector === 'button, [role="button"], a, summary') {
+      return [confirmButton];
+    }
+    return [];
+  };
+  context.chrome.runtime.sendMessage = (message, callback) => {
+    state.runtimeMessages = state.runtimeMessages || [];
+    state.runtimeMessages.push(message);
+    if (message.type === 'DEBUGGER_CLICK_AT') {
+      challengeVisible = false;
+      confirmButton.disabled = false;
+      context.document.body.innerText = '';
+    }
+    const response = { ok: true };
+    if (typeof callback === 'function') {
+      callback(response);
+    }
+    return Promise.resolve(response);
+  };
+  context.sleep = async () => {};
+
+  loadTmailorScript(context);
+  const hooks = context.__MULTIPAGE_TMAILOR_TEST_HOOKS;
+  assert.ok(hooks?.waitForCloudflareConfirm, 'expected tmailor to expose waitForCloudflareConfirm');
+
+  const handled = await hooks.waitForCloudflareConfirm(1500);
+
+  assert.equal(handled, true);
+  const clickMessage = (state.runtimeMessages || []).find((entry) => entry.type === 'DEBUGGER_CLICK_AT');
+  assert.ok(clickMessage, 'expected a debugger click request for the turnstile');
+  assert.equal(Math.round(clickMessage.payload.rect.centerX), 431);
+  assert.equal(Math.round(clickMessage.payload.rect.centerY), 503);
 });
 
 test('tmailor can click a Cloudflare turnstile container when the iframe is hidden inside a closed shadow root', async () => {

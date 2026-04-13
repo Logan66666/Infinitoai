@@ -6,6 +6,8 @@ const {
   getClipboardReadDeniedMessage,
   getNoTmailorEmailFoundMessage,
   getTmailorValidationSuccessAction,
+  shouldExecuteStep3AfterValidation,
+  shouldAttemptAutoRunResumeFromInput,
   shouldFallbackToStep3AfterResume,
   shouldRetryTmailorFetchAfterValidationFailure,
 } = require('../shared/tmailor-paste-feedback.js');
@@ -43,4 +45,52 @@ test('validation falls back to step 3 when auto-run resume is not actually attac
   assert.equal(shouldFallbackToStep3AfterResume({ resumed: true }), false);
   assert.equal(shouldFallbackToStep3AfterResume({ resumed: false }), true);
   assert.equal(shouldFallbackToStep3AfterResume(null), true);
+});
+
+test('successful TMailor validation starts step 3 unless auto-run really resumed', () => {
+  assert.equal(
+    shouldExecuteStep3AfterValidation({
+      successAction: 'execute_step_3',
+      resumeSucceeded: false,
+    }),
+    true
+  );
+  assert.equal(
+    shouldExecuteStep3AfterValidation({
+      successAction: 'resume_auto_run',
+      resumeSucceeded: false,
+    }),
+    true
+  );
+  assert.equal(
+    shouldExecuteStep3AfterValidation({
+      successAction: 'resume_auto_run',
+      resumeSucceeded: true,
+    }),
+    false
+  );
+});
+
+test('manual email input only auto-resumes when the flow is waiting and the value looks like an email', () => {
+  assert.equal(
+    shouldAttemptAutoRunResumeFromInput({
+      autoContinueVisible: true,
+      email: 'temp@example.com',
+    }),
+    true
+  );
+  assert.equal(
+    shouldAttemptAutoRunResumeFromInput({
+      autoContinueVisible: false,
+      email: 'temp@example.com',
+    }),
+    false
+  );
+  assert.equal(
+    shouldAttemptAutoRunResumeFromInput({
+      autoContinueVisible: true,
+      email: 'not-an-email',
+    }),
+    false
+  );
 });

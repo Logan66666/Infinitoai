@@ -23,7 +23,6 @@ const btnStop = document.getElementById('btn-stop');
 const btnReset = document.getElementById('btn-reset');
 const stepsProgress = document.getElementById('steps-progress');
 const btnAutoRun = document.getElementById('btn-auto-run');
-const btnAutoContinue = document.getElementById('btn-auto-continue');
 const autoContinueBar = document.getElementById('auto-continue-bar');
 const autoContinueHint = document.getElementById('auto-continue-hint');
 const btnClearLog = document.getElementById('btn-clear-log');
@@ -69,6 +68,8 @@ const {
 } = EmailAddresses;
 const {
   buildTopSettingPayload,
+  getAutoContinueHint,
+  getEmailInputPlaceholder,
 } = SidepanelSettings;
 const { shouldDisableStepButton, shouldEnableStopButton } = ManualStepControls;
 const { isLogNearBottom, shouldShowScrollToBottomButton } = SidepanelLogScroll;
@@ -79,6 +80,8 @@ const {
   getClipboardReadDeniedMessage,
   getNoTmailorEmailFoundMessage,
   getTmailorValidationSuccessAction,
+  shouldExecuteStep3AfterValidation,
+  shouldAttemptAutoRunResumeFromInput,
   shouldFallbackToStep3AfterResume,
   shouldRetryTmailorFetchAfterValidationFailure,
 } = TmailorPasteFeedback;
@@ -354,21 +357,17 @@ function updateEmailSourceUI() {
   renderTmailorApiStatus();
   renderTmailorApiCodeButton(false);
 
-  inputEmail.placeholder = is33Mail
-    ? isGroupedMailProvider
-      ? 'Step 3 will generate a 33mail address automatically'
-      : '33mail uses the 163 / QQ groups'
-    : isTmailor
-      ? 'Step 3 will generate a TMailor address automatically'
-    : 'Paste DuckDuckGo email';
+  inputEmail.placeholder = getEmailInputPlaceholder({
+    emailSource,
+    mailProvider: currentProvider,
+    autoRotateMailProvider: inputAutoRotateMailProvider.checked,
+  });
   renderFetchButton(false);
-  autoContinueHint.textContent = is33Mail
-    ? inputAutoRotateMailProvider.checked
-      ? 'Auto mode will rotate the 163 / QQ 33mail groups by run'
-      : 'Select 163 or QQ, configure its domain, then continue'
-    : isTmailor
-      ? 'Use Auto to generate a TMailor address, then continue'
-    : 'Use Auto to fetch Duck email, or paste manually, then continue';
+  autoContinueHint.textContent = getAutoContinueHint({
+    emailSource,
+    mailProvider: currentProvider,
+    autoRotateMailProvider: inputAutoRotateMailProvider.checked,
+  });
 
   if (isTmailor) {
     void refreshTmailorApiStatus();
@@ -789,6 +788,15 @@ async function fetchEmailAddress(options = {}) {
       updateEmailSourceUI();
     }
     inputEmail.value = response.email;
+    if (autoContinueBar.style.display !== 'none' && response.email) {
+      await chrome.runtime.sendMessage({
+        type: 'SAVE_EMAIL',
+        source: 'sidepanel',
+        payload: { email: response.email },
+      });
+      await resumeAutoRunFromEmail(response.email);
+      return response.email;
+    }
     const providerLabel = response.mailProvider === 'qq'
       ? 'QQ'
       : response.mailProvider === '163'
@@ -860,16 +868,6 @@ async function pasteAndValidateTmailorEmail() {
             manageButtonState: false,
             suppressErrorToast: true,
           });
-
-          if (autoContinueBar.style.display !== 'none' && freshEmail) {
-            autoContinueBar.style.display = 'none';
-            await chrome.runtime.sendMessage({
-              type: 'RESUME_AUTO_RUN',
-              source: 'sidepanel',
-              payload: { email: freshEmail },
-            });
-          }
-
           return freshEmail;
         } catch (fetchErr) {
           throw new Error(`自动请求新的 TMailor 邮箱失败：${fetchErr.message}`);
@@ -890,26 +888,24 @@ async function pasteAndValidateTmailorEmail() {
       autoContinueVisible: autoContinueBar.style.display !== 'none',
     });
 
+    let resumeSucceeded = false;
     if (successAction === 'resume_auto_run') {
-      const resumeResult = await chrome.runtime.sendMessage({
-        type: 'RESUME_AUTO_RUN',
-        source: 'sidepanel',
-        payload: { email: validation.email },
-      });
-      if (!shouldFallbackToStep3AfterResume(resumeResult)) {
-        autoContinueBar.style.display = 'none';
-        showToast(`Accepted ${validation.email} · resumed`, 'success', 3000);
+      resumeSucceeded = await resumeAutoRunFromEmail(validation.email);
+      if (resumeSucceeded) {
         return validation.email;
       }
     }
 
-    await persistCurrentTopSettings();
-    await chrome.runtime.sendMessage({
-      type: 'EXECUTE_STEP',
-      source: 'sidepanel',
-      payload: { step: 3, email: validation.email },
-    });
-    showToast(`Accepted ${validation.email}${picked.source === 'input' ? ' · from input' : ''} · starting step 3`, 'success', 3000);
+    if (shouldExecuteStep3AfterValidation({ successAction, resumeSucceeded })) {
+      await persistCurrentTopSettings();
+      await chrome.runtime.sendMessage({
+        type: 'EXECUTE_STEP',
+        source: 'sidepanel',
+        payload: { step: 3, email: validation.email },
+      });
+      showToast(`Accepted ${validation.email}${picked.source === 'input' ? ' · from input' : ''} · starting step 3`, 'success', 3000);
+    }
+
     return validation.email;
   } catch (err) {
     showToast(`Paste check failed: ${err.message}`, 'error');
@@ -1022,27 +1018,6 @@ btnAutoRun.addEventListener('click', async () => {
   await chrome.runtime.sendMessage({ type: 'AUTO_RUN', source: 'sidepanel', payload: { totalRuns, infiniteMode } });
 });
 
-btnAutoContinue.addEventListener('click', async () => {
-  const email = inputEmail.value.trim();
-  if (!['33mail', 'tmailor'].includes(sanitizeEmailSource(selectEmailSource.value)) && !email) {
-    showToast('Fetch or paste an email first', 'warn');
-    return;
-  }
-  const resumeResult = await chrome.runtime.sendMessage({ type: 'RESUME_AUTO_RUN', source: 'sidepanel', payload: email ? { email } : {} });
-  if (!shouldFallbackToStep3AfterResume(resumeResult)) {
-    autoContinueBar.style.display = 'none';
-    return;
-  }
-
-  await persistCurrentTopSettings();
-  await chrome.runtime.sendMessage({
-    type: 'EXECUTE_STEP',
-    source: 'sidepanel',
-    payload: email ? { step: 3, email } : { step: 3 },
-  });
-  autoContinueBar.style.display = 'none';
-});
-
 // Reset
 btnReset.addEventListener('click', async () => {
   if (confirm('Reset all steps and data?')) {
@@ -1111,11 +1086,42 @@ async function persistCurrentTopSettings(overrides = {}) {
   await saveTopSetting(collectTopSettingPayload(overrides));
 }
 
+async function resumeAutoRunFromEmail(email) {
+  const trimmedEmail = String(email || '').trim();
+  const resumeResult = await chrome.runtime.sendMessage({
+    type: 'RESUME_AUTO_RUN',
+    source: 'sidepanel',
+    payload: trimmedEmail ? { email: trimmedEmail } : {},
+  });
+
+  if (!shouldFallbackToStep3AfterResume(resumeResult)) {
+    autoContinueBar.style.display = 'none';
+    showToast(`Accepted ${trimmedEmail} · resumed`, 'success', 3000);
+    return true;
+  }
+
+  await persistCurrentTopSettings();
+  await chrome.runtime.sendMessage({
+    type: 'EXECUTE_STEP',
+    source: 'sidepanel',
+    payload: trimmedEmail ? { step: 3, email: trimmedEmail } : { step: 3 },
+  });
+  autoContinueBar.style.display = 'none';
+  showToast(`Accepted ${trimmedEmail} · starting step 3`, 'success', 3000);
+  return true;
+}
+
 // Save settings on change
 inputEmail.addEventListener('change', async () => {
   const email = inputEmail.value.trim();
   if (email) {
     await chrome.runtime.sendMessage({ type: 'SAVE_EMAIL', source: 'sidepanel', payload: { email } });
+    if (shouldAttemptAutoRunResumeFromInput({
+      autoContinueVisible: autoContinueBar.style.display !== 'none',
+      email,
+    })) {
+      await resumeAutoRunFromEmail(email);
+    }
   }
 });
 

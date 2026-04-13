@@ -101,6 +101,46 @@
     };
   }
 
+  function getEmailInputPlaceholder({ emailSource, mailProvider, autoRotateMailProvider } = {}) {
+    const normalizedSource = sanitizeEmailSource(emailSource);
+    const normalizedProvider = sanitizeMailProvider(mailProvider);
+    const isGroupedMailProvider = normalizedProvider === '163' || normalizedProvider === 'qq';
+
+    if (normalizedSource === '33mail') {
+      return isGroupedMailProvider
+        ? 'Step 3 will generate a 33mail address automatically'
+        : '33mail uses the 163 / QQ groups';
+    }
+
+    if (normalizedSource === 'tmailor') {
+      return 'Paste the generated TMailor address here manually';
+    }
+
+    return 'Paste DuckDuckGo email';
+  }
+
+  function getAutoContinueHint({ emailSource, mailProvider, autoRotateMailProvider } = {}) {
+    const normalizedSource = sanitizeEmailSource(emailSource);
+    const normalizedProvider = sanitizeMailProvider(mailProvider);
+    const shouldAutoRotate = sanitizeAutoRotateMailProvider(autoRotateMailProvider);
+    const isGroupedMailProvider = normalizedProvider === '163' || normalizedProvider === 'qq';
+
+    if (normalizedSource === '33mail') {
+      if (shouldAutoRotate) {
+        return 'Auto mode will rotate the 163 / QQ 33mail groups by run';
+      }
+      return isGroupedMailProvider
+        ? 'Select 163 or QQ, configure its domain, then continue'
+        : '33mail uses the 163 / QQ groups';
+    }
+
+    if (normalizedSource === 'tmailor') {
+      return 'Click New Email on TMailor, then paste the generated address into Email. Auto run will resume automatically.';
+    }
+
+    return 'Use Auto to fetch Duck email, or paste manually, then continue';
+  }
+
   return {
     buildTopSettingPayload,
     DEFAULT_AUTO_RUN_COUNT,
@@ -108,6 +148,8 @@
     DEFAULT_AUTO_ROTATE_MAIL_PROVIDER,
     DEFAULT_EMAIL_SOURCE,
     PERSISTED_TOP_SETTING_KEYS,
+    getAutoContinueHint,
+    getEmailInputPlaceholder,
     normalizePersistentSettings,
     sanitizeAutoRunCount,
     sanitizeAutoRotateMailProvider,
