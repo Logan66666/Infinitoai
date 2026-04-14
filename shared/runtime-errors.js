@@ -28,10 +28,16 @@
     return status === 'failed' || status === 'stopped';
   }
 
+  function shouldRetryStep3WithFreshOauth(error) {
+    const message = typeof error === 'string' ? error : error?.message || '';
+    return /step 3 blocked: openai auth page timed out before credentials could be submitted/i.test(message);
+  }
+
   return {
     buildMailPollRecoveryPlan,
     isMessageChannelClosedError,
     isReceivingEndMissingError,
+    shouldRetryStep3WithFreshOauth,
     shouldSkipStepResultLog,
   };
 });

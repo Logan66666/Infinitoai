@@ -113,6 +113,7 @@ function createContext() {
 }
 
 function loadVpsPanel(context) {
+  context.FlowRecovery = require('../shared/flow-recovery.js');
   const scriptPath = path.join(__dirname, '..', 'content', 'vps-panel.js');
   const code = fs.readFileSync(scriptPath, 'utf8');
   vm.createContext(context);
@@ -350,5 +351,74 @@ test('step 9 fails with a step-6 retry hint after repeated 502 callback submissi
 
   assert.match(response?.error || '', /step 6|502/i);
   assert.equal(state.clicked, 4);
+  assert.equal(state.completed.length, 0);
+});
+
+test('step 9 asks background to refresh OAuth when the VPS status says the authorization link is not pending', async () => {
+  const context = createContext();
+  const state = context.__state;
+  const urlInput = {
+    value: '',
+    getBoundingClientRect() {
+      return { width: 300, height: 30 };
+    },
+  };
+  const submitButton = {
+    textContent: '提交回调 URL',
+    getBoundingClientRect() {
+      return { width: 120, height: 30 };
+    },
+  };
+
+  context.fillInput = (input, value) => {
+    input.value = value;
+    state.lastFilledUrl = value;
+  };
+  context.waitForElement = (selector) => {
+    if (selector === '[class*="callbackSection"] input.input') {
+      return Promise.resolve(urlInput);
+    }
+    if (selector === 'input[placeholder*="localhost"]') {
+      return Promise.resolve(urlInput);
+    }
+    return Promise.reject(new Error(`unexpected selector: ${selector}`));
+  };
+  context.waitForElementByText = (selector) => {
+    if (selector.includes('callbackActions') || selector === 'button.btn') {
+      return Promise.resolve(submitButton);
+    }
+    if (selector === '.status-badge, [class*="status"]') {
+      return Promise.reject(new Error('still processing'));
+    }
+    return Promise.reject(new Error(`unexpected selector: ${selector}`));
+  };
+  context.document.querySelector = (selector) => {
+    if (selector === '.status-badge, [class*="status"]') {
+      return { textContent: 'This authorization link is not pending anymore.' };
+    }
+    if (selector === 'body') {
+      return { textContent: 'This authorization link is not pending anymore.' };
+    }
+    return null;
+  };
+
+  loadVpsPanel(context);
+  const listener = context.__listeners[0];
+  assert.ok(listener, 'expected vps-panel to register a runtime listener');
+
+  const response = await new Promise((resolve, reject) => {
+    const keepAlive = listener(
+      { type: 'EXECUTE_STEP', step: 9, payload: { localhostUrl: 'http://localhost:1455/auth/callback?code=test' } },
+      {},
+      (result) => resolve(result)
+    );
+    assert.equal(keepAlive, true);
+    setTimeout(() => reject(new Error('timeout waiting for response')), 2000);
+  });
+
+  assert.equal(response?.ok, true);
+  assert.equal(response?.retryWithFreshOauth, true);
+  assert.equal(response?.reason, 'auth_link_not_pending');
+  assert.equal(state.clicked, 1);
   assert.equal(state.completed.length, 0);
 });

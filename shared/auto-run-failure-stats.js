@@ -7,7 +7,7 @@
 
   root.AutoRunFailureStats = exports;
 })(typeof globalThis !== 'undefined' ? globalThis : self, function() {
-  const MAX_RECENT_LOGS = 3;
+  const MAX_RECENT_LOGS = 20;
   const MAX_RECENT_SUCCESS_DURATIONS = 20;
 
   function sanitizeCounter(value) {
@@ -220,6 +220,18 @@
     };
   }
 
+  function resetAutoRunFailureStats(stats = {}) {
+    const normalizedStats = normalizeAutoRunStats(stats);
+    return {
+      successfulRuns: normalizedStats.successfulRuns,
+      failedRuns: 0,
+      totalSuccessfulDurationMs: normalizedStats.totalSuccessfulDurationMs,
+      recentSuccessDurationsMs: normalizedStats.recentSuccessDurationsMs,
+      recentSuccessEntries: normalizedStats.recentSuccessEntries,
+      failureBuckets: [],
+    };
+  }
+
   function summarizeAutoRunFailureBuckets(stats = {}) {
     return normalizeAutoRunStats(stats).failureBuckets.slice().sort((left, right) => {
       if (right.count !== left.count) {
@@ -236,6 +248,7 @@
     normalizeAutoRunStats,
     recordAutoRunFailure,
     recordAutoRunSuccess,
+    resetAutoRunFailureStats,
     summarizeAutoRunFailureBuckets,
   };
 });

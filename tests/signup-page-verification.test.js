@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const AuthFatalErrors = require('../shared/auth-fatal-errors.js');
 
 function createContext({
   href = 'https://auth.openai.com/email-verification',
@@ -71,6 +72,12 @@ function createContext({
     AuthFatalErrors: {
       isAuthFatalErrorText() {
         return false;
+      },
+      isUnsupportedCountryRegionTerritoryText() {
+        return false;
+      },
+      getUnsupportedCountryRegionTerritoryMessage(step) {
+        return `Step ${step} blocked: unsupported country or region.`;
       },
     },
     UnsupportedEmail: {
@@ -180,6 +187,84 @@ test('step 7 fails the round when email verification page has retry text but no 
   assert.deepEqual(context.__errors, [
     {
       step: 7,
+      message: response.error,
+    },
+  ]);
+});
+
+test('step 2 stops immediately and asks to change node when oauth page shows unsupported country or region', async () => {
+  const context = createContext({
+    href: 'https://auth.openai.com/api/oauth/authorize?client_id=test-client',
+    bodyText: JSON.stringify({
+      error: {
+        code: 'unsupported_country_region_territory',
+        message: 'Country, region, or territory not supported',
+        param: null,
+        type: 'request_forbidden',
+      },
+    }),
+  });
+  context.AuthFatalErrors = AuthFatalErrors;
+  loadSignupPage(context);
+
+  const listener = context.__listeners[0];
+  assert.ok(listener, 'expected signup-page to register a runtime listener');
+
+  const response = await new Promise((resolve, reject) => {
+    const keepAlive = listener(
+      { type: 'EXECUTE_STEP', step: 2, payload: {} },
+      {},
+      (result) => resolve(result)
+    );
+    assert.equal(keepAlive, true);
+    setTimeout(() => reject(new Error('timeout waiting for response')), 2000);
+  });
+
+  assert.equal(
+    response?.error,
+    'Step 2 blocked: OpenAI does not support the current country, region, or territory. Please change node and retry.'
+  );
+  assert.deepEqual(context.__errors, [
+    {
+      step: 2,
+      message: response.error,
+    },
+  ]);
+  assert.deepEqual(context.__completions, []);
+});
+
+test('step 3 reports an auth timeout page instead of a missing email field when the oauth session expired', async () => {
+  const context = createContext({
+    href: 'https://auth.openai.com/u/signup/identifier',
+    bodyText: '糟糕，出错了！ Operation timed out',
+  });
+  context.AuthFatalErrors = {
+    ...AuthFatalErrors,
+    isAuthFatalErrorText: AuthFatalErrors.isAuthFatalErrorText,
+  };
+  loadSignupPage(context);
+
+  const listener = context.__listeners[0];
+  assert.ok(listener, 'expected signup-page to register a runtime listener');
+
+  const response = await new Promise((resolve, reject) => {
+    const keepAlive = listener(
+      { type: 'EXECUTE_STEP', step: 3, payload: { email: 'demo@example.com', password: 'secret-pass' } },
+      {},
+      (result) => resolve(result)
+    );
+    assert.equal(keepAlive, true);
+    setTimeout(() => reject(new Error('timeout waiting for response')), 2000);
+  });
+
+  assert.equal(
+    response?.error,
+    'Step 3 blocked: OpenAI auth page timed out before credentials could be submitted. Refresh the VPS OAuth link and retry with the same email and password.'
+  );
+  assert.deepEqual(context.__completions, []);
+  assert.deepEqual(context.__errors, [
+    {
+      step: 3,
       message: response.error,
     },
   ]);

@@ -260,3 +260,46 @@ test('buildAutoRunFailureRecord builds a normalized failure entry for grouped st
     }
   );
 });
+
+test('buildAutoRunFailureRecord falls back to the current step when the error was recorded as flow-level', () => {
+  assert.deepEqual(
+    buildAutoRunFailureRecord({
+      errorMessage: 'The page keeping the extension port is moved into back/forward cache, so the message channel is closed.',
+      currentRun: 3,
+      totalRuns: Number.POSITIVE_INFINITY,
+      infiniteMode: true,
+      step: 0,
+      currentStep: 4,
+      timestamp: 789000,
+    }),
+    {
+      step: 4,
+      errorMessage: 'The page keeping the extension port is moved into back/forward cache, so the message channel is closed.',
+      logMessage: 'Run 3/∞ failed: The page keeping the extension port is moved into back/forward cache, so the message channel is closed.',
+      runLabel: '3/∞',
+      timestamp: 789000,
+    }
+  );
+});
+
+test('buildAutoRunFailureRecord prefers the current run step when the UI current step was already cleared', () => {
+  assert.deepEqual(
+    buildAutoRunFailureRecord({
+      errorMessage: 'Content script on tmailor-mail did not respond in 25s. Try refreshing the tab and retry.',
+      currentRun: 6,
+      totalRuns: Number.POSITIVE_INFINITY,
+      infiniteMode: true,
+      step: 0,
+      currentRunStep: 7,
+      currentStep: 0,
+      timestamp: 999111,
+    }),
+    {
+      step: 7,
+      errorMessage: 'Content script on tmailor-mail did not respond in 25s. Try refreshing the tab and retry.',
+      logMessage: 'Run 6/∞ failed: Content script on tmailor-mail did not respond in 25s. Try refreshing the tab and retry.',
+      runLabel: '6/∞',
+      timestamp: 999111,
+    }
+  );
+});

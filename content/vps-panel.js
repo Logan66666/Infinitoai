@@ -25,19 +25,20 @@
 
 (function() {
 if (window.__MULTIPAGE_VPS_PANEL_LOADED) {
-  console.log('[MultiPage:vps-panel] Content script already loaded on', location.href);
+  console.log('[Infinito.AI:vps-panel] Content script already loaded on', location.href);
   return;
 }
 window.__MULTIPAGE_VPS_PANEL_LOADED = true;
 
-console.log('[MultiPage:vps-panel] Content script loaded on', location.href);
+console.log('[Infinito.AI:vps-panel] Content script loaded on', location.href);
+const { isVpsAuthorizationNotPendingText } = FlowRecovery;
 
 // Listen for commands from Background
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'EXECUTE_STEP') {
     resetStopState();
-    handleStep(message.step, message.payload).then(() => {
-      sendResponse({ ok: true });
+    handleStep(message.step, message.payload).then((result) => {
+      sendResponse({ ok: true, ...(result || {}) });
     }).catch(err => {
       if (isStopError(err)) {
         log(`Step ${message.step}: Stopped by user.`, 'warn');
@@ -213,6 +214,15 @@ async function step9_vpsVerify(payload) {
       );
     }
 
+    if (outcome.kind === 'auth_link_not_pending') {
+      log(`Step 9: VPS says the authorization link is no longer pending (${outcome.detail}). Requesting a fresh OAuth recovery...`, 'warn');
+      return {
+        retryWithFreshOauth: true,
+        reason: 'auth_link_not_pending',
+        detail: outcome.detail,
+      };
+    }
+
     log(`Step 9: Status after submit: "${outcome.detail}". May still be processing.`, 'warn');
     reportComplete(9);
     return;
@@ -285,6 +295,9 @@ async function waitForStep9Outcome(timeoutMs = 30000) {
   }
 
   const statusText = collectStep9StatusText() || 'unknown';
+  if (isVpsAuthorizationNotPendingText(statusText)) {
+    return { kind: 'auth_link_not_pending', detail: statusText };
+  }
   if (/认证成功|成功|success/i.test(statusText)) {
     return { kind: 'success', detail: statusText };
   }

@@ -127,6 +127,8 @@
     totalRuns,
     infiniteMode = false,
     step = 0,
+    currentRunStep = 0,
+    currentStep = 0,
     timestamp = Date.now(),
   } = {}) {
     const runLabel = formatAutoRunLabel({
@@ -134,9 +136,17 @@
       totalRuns,
       infiniteMode,
     });
+    const normalizedStep = Number.parseInt(String(step ?? '').trim(), 10);
+    const normalizedCurrentRunStep = Number.parseInt(String(currentRunStep ?? '').trim(), 10);
+    const normalizedCurrentStep = Number.parseInt(String(currentStep ?? '').trim(), 10);
+    const resolvedStep = Number.isFinite(normalizedStep) && normalizedStep > 0
+      ? normalizedStep
+      : (Number.isFinite(normalizedCurrentRunStep) && normalizedCurrentRunStep > 0
+        ? normalizedCurrentRunStep
+        : (Number.isFinite(normalizedCurrentStep) && normalizedCurrentStep > 0 ? normalizedCurrentStep : 0));
 
     return {
-      step,
+      step: resolvedStep,
       errorMessage: getErrorMessage(errorMessage),
       logMessage: `Run ${runLabel} failed: ${getErrorMessage(errorMessage)}`,
       runLabel,

@@ -5,6 +5,7 @@ const {
   normalizeAutoRunStats,
   recordAutoRunFailure,
   recordAutoRunSuccess,
+  resetAutoRunFailureStats,
   summarizeAutoRunFailureBuckets,
 } = require('../shared/auto-run-failure-stats.js');
 
@@ -35,14 +36,14 @@ test('recordAutoRunFailure groups failures by step and normalized reason while k
   });
 });
 
-test('recordAutoRunFailure increments an existing bucket and keeps only the newest log samples', () => {
+test('recordAutoRunFailure increments an existing bucket and keeps only the newest 20 log samples', () => {
   let stats = normalizeAutoRunStats({
     successfulRuns: 0,
     failedRuns: 0,
     failureBuckets: [],
   });
 
-  for (let index = 1; index <= 5; index += 1) {
+  for (let index = 1; index <= 25; index += 1) {
     stats = recordAutoRunFailure(stats, {
       step: 4,
       errorMessage: `Step 4 failed: No matching verification email found on TMailor after ${index} attempts.`,
@@ -52,14 +53,17 @@ test('recordAutoRunFailure increments an existing bucket and keeps only the newe
     });
   }
 
-  assert.equal(stats.failedRuns, 5);
+  assert.equal(stats.failedRuns, 25);
   assert.equal(stats.failureBuckets.length, 1);
-  assert.equal(stats.failureBuckets[0].count, 5);
-  assert.deepEqual(stats.failureBuckets[0].recentLogs, [
-    'Run 5 failed: Step 4 failed: No matching verification email found on TMailor after 5 attempts.',
-    'Run 4 failed: Step 4 failed: No matching verification email found on TMailor after 4 attempts.',
-    'Run 3 failed: Step 4 failed: No matching verification email found on TMailor after 3 attempts.',
-  ]);
+  assert.equal(stats.failureBuckets[0].count, 25);
+  assert.equal(stats.failureBuckets[0].recentLogs.length, 20);
+  assert.deepEqual(stats.failureBuckets[0].recentLogs, Array.from(
+    { length: 20 },
+    (_, offset) => {
+      const index = 25 - offset;
+      return `Run ${index} failed: Step 4 failed: No matching verification email found on TMailor after ${index} attempts.`;
+    }
+  ));
 });
 
 test('recordAutoRunSuccess increments success count and accumulates successful duration', () => {
@@ -130,6 +134,22 @@ test('normalizeAutoRunStats sanitizes total successful duration for legacy and m
     normalizeAutoRunStats({ recentSuccessDurationsMs: Array.from({ length: 25 }, (_, index) => index + 1) }).recentSuccessDurationsMs,
     Array.from({ length: 20 }, (_, index) => index + 1)
   );
+  assert.equal(
+    normalizeAutoRunStats({
+      failureBuckets: [
+        {
+          key: 'step-4::mail',
+          step: 4,
+          reason: 'No matching verification email found',
+          count: 25,
+          lastRunLabel: '25/∞',
+          lastSeenAt: 25,
+          recentLogs: Array.from({ length: 25 }, (_, index) => `Run ${index + 1} failed`),
+        },
+      ],
+    }).failureBuckets[0].recentLogs.length,
+    20
+  );
 });
 
 test('summarizeAutoRunFailureBuckets sorts the most frequent recent failure first', () => {
@@ -171,4 +191,40 @@ test('summarizeAutoRunFailureBuckets sorts the most frequent recent failure firs
   assert.equal(summary[0].step, 4);
   assert.equal(summary[1].step, 7);
   assert.equal(summary[2].step, 1);
+});
+
+test('resetAutoRunFailureStats clears only failure counters while preserving recent successes', () => {
+  const next = resetAutoRunFailureStats({
+    successfulRuns: 4,
+    failedRuns: 3,
+    totalSuccessfulDurationMs: 91234,
+    recentSuccessDurationsMs: [35000, 28000],
+    recentSuccessEntries: [
+      { durationMs: 35000, mode: 'api' },
+      { durationMs: 28000, mode: 'simulated' },
+    ],
+    failureBuckets: [
+      {
+        key: 'step-4::mail',
+        step: 4,
+        reason: 'No matching verification email found',
+        count: 3,
+        lastRunLabel: '8/∞',
+        lastSeenAt: 12345,
+        recentLogs: ['Run 8 failed'],
+      },
+    ],
+  });
+
+  assert.deepEqual(next, {
+    successfulRuns: 4,
+    failedRuns: 0,
+    totalSuccessfulDurationMs: 91234,
+    recentSuccessDurationsMs: [35000, 28000],
+    recentSuccessEntries: [
+      { durationMs: 35000, mode: 'api' },
+      { durationMs: 28000, mode: 'simulated' },
+    ],
+    failureBuckets: [],
+  });
 });

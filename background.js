@@ -1,15 +1,21 @@
 // background.js — Service Worker: orchestration, state, tab management, message routing
 
-importScripts('shared/email-addresses.js', 'shared/mail-provider-rotation.js', 'shared/tmailor-domains.js', 'shared/tmailor-api.js', 'shared/tmailor-errors.js', 'shared/tmailor-mailbox-strategy.js', 'shared/tmailor-verification-profiles.js', 'shared/content-script-queue.js', 'shared/login-verification-codes.js', 'data/names.js', 'shared/flow-runner.js', 'shared/runtime-errors.js', 'shared/auto-run.js', 'shared/auto-run-failure-stats.js', 'shared/duck-mail-errors.js', 'shared/sidepanel-settings.js', 'shared/tab-reclaim.js');
+importScripts('shared/email-addresses.js', 'shared/mail-provider-rotation.js', 'shared/tmailor-domains.js', 'shared/tmailor-api.js', 'shared/tmailor-errors.js', 'shared/tmailor-mailbox-strategy.js', 'shared/tmailor-verification-profiles.js', 'shared/flow-recovery.js', 'shared/content-script-queue.js', 'shared/login-verification-codes.js', 'data/names.js', 'shared/flow-runner.js', 'shared/runtime-errors.js', 'shared/auto-run.js', 'shared/auto-run-failure-stats.js', 'shared/duck-mail-errors.js', 'shared/sidepanel-settings.js', 'shared/tab-reclaim.js');
 
-const LOG_PREFIX = '[MultiPage:bg]';
+const LOG_PREFIX = '[Infinito.AI:bg]';
 const DUCK_AUTOFILL_URL = 'https://duckduckgo.com/email/settings/autofill';
 const STOP_ERROR_MESSAGE = 'Flow stopped by user.';
 const AUTO_RUN_HANDOFF_MESSAGE = 'Auto run handed off to manual continuation.';
 const HUMAN_STEP_DELAY_MIN = 700;
 const HUMAN_STEP_DELAY_MAX = 2200;
 const { runStepSequence } = FlowRunner;
-const { buildMailPollRecoveryPlan, isMessageChannelClosedError, isReceivingEndMissingError, shouldSkipStepResultLog } = RuntimeErrors;
+const {
+  buildMailPollRecoveryPlan,
+  isMessageChannelClosedError,
+  isReceivingEndMissingError,
+  shouldRetryStep3WithFreshOauth,
+  shouldSkipStepResultLog,
+} = RuntimeErrors;
 const {
   buildAutoRunStatusPayload,
   buildAutoRunFailureRecord,
@@ -22,6 +28,7 @@ const {
   normalizeAutoRunStats,
   recordAutoRunFailure,
   recordAutoRunSuccess,
+  resetAutoRunFailureStats,
 } = AutoRunFailureStats;
 const { addDuckMailRetryHint } = DuckMailErrors;
 const { isTmailorApiCaptchaError } = TmailorErrors;
@@ -34,6 +41,7 @@ const { chooseMailProviderForAutoRun, getConfiguredRotatableMailProviders, getNe
 const { DEFAULT_TMAILOR_DOMAIN_STATE, extractEmailDomain, isAllowedTmailorDomain, mergeTmailorDomainStates, normalizeTmailorDomainState, recordTmailorDomainFailure, recordTmailorDomainSuccess, shouldBlacklistTmailorDomainForError } = TmailorDomains;
 const { checkTmailorApiConnectivity, fetchAllowedTmailorEmail, pollTmailorVerificationCode } = TmailorApi;
 const { buildReclaimableTabRegistry, shouldPrepareSameUrlTabForReuse } = TabReclaim;
+const { getMailTabOpenUrlForStep, shouldNavigateMailTabOnStepStart } = FlowRecovery;
 const {
   DEFAULT_AUTO_RUN_COUNT,
   DEFAULT_AUTO_RUN_INFINITE,
@@ -78,7 +86,7 @@ const RECLAIM_SOURCE_CONFIG = {
   'vps-panel': {
     readyOnClaim: false,
     loadedMarker: '__MULTIPAGE_VPS_PANEL_LOADED',
-    inject: ['content/utils.js', 'content/vps-panel.js'],
+    inject: ['shared/flow-recovery.js', 'content/utils.js', 'content/vps-panel.js'],
   },
 };
 
@@ -117,6 +125,7 @@ async function ensureAutomationWindowId() {
 
 const DEFAULT_STATE = {
   currentStep: 0,
+  currentRunStep: 0,
   stepStatuses: {
     1: 'pending', 2: 'pending', 3: 'pending', 4: 'pending', 5: 'pending',
     6: 'pending', 7: 'pending', 8: 'pending', 9: 'pending',
@@ -161,7 +170,19 @@ const DEFAULT_STATE = {
 };
 
 const TMAILOR_DOMAIN_STATE_KEY = 'tmailorDomainState';
+const AUTO_RUN_STATS_KEY = 'autoRunStats';
 let cachedTmailorDomainSeeds = null;
+let autoRunStatsLoaded = false;
+let autoRunStatsLoadPromise = null;
+
+function applyAutoRunStatsCache(stats = {}) {
+  const normalizedStats = normalizeAutoRunStats(stats);
+  autoRunSuccessfulRuns = normalizedStats.successfulRuns;
+  autoRunFailedRuns = normalizedStats.failedRuns;
+  autoRunStatsState = normalizedStats;
+  autoRunStatsLoaded = true;
+  return normalizedStats;
+}
 
 async function loadPersistentTmailorDomainSeeds() {
   if (cachedTmailorDomainSeeds) {
@@ -184,12 +205,13 @@ async function loadPersistentTmailorDomainSeeds() {
 }
 
 async function getState() {
-  const [sessionState, persistentSettings, tmailorDomainState] = await Promise.all([
+  const [sessionState, persistentSettings, tmailorDomainState, autoRunStats] = await Promise.all([
     chrome.storage.session.get(null),
     getPersistentSettings(),
     getPersistentTmailorDomainState(),
+    getPersistentAutoRunStats(),
   ]);
-  return { ...DEFAULT_STATE, ...sessionState, ...persistentSettings, tmailorDomainState };
+  return { ...DEFAULT_STATE, ...sessionState, ...persistentSettings, tmailorDomainState, autoRunStats };
 }
 
 async function initializeSessionStorageAccess() {
@@ -208,6 +230,64 @@ async function initializeSessionStorageAccess() {
 async function setState(updates) {
   console.log(LOG_PREFIX, 'storage.set:', JSON.stringify(updates).slice(0, 200));
   await chrome.storage.session.set(updates);
+}
+
+async function getPersistentAutoRunStats() {
+  const [localState, sessionState] = await Promise.all([
+    chrome.storage.local.get(AUTO_RUN_STATS_KEY),
+    chrome.storage.session.get(AUTO_RUN_STATS_KEY),
+  ]);
+
+  const localStored = localState[AUTO_RUN_STATS_KEY];
+  const sessionStored = sessionState[AUTO_RUN_STATS_KEY];
+  const mergedStats = normalizeAutoRunStats(
+    localStored !== undefined
+      ? localStored
+      : (sessionStored !== undefined ? sessionStored : DEFAULT_STATE.autoRunStats)
+  );
+
+  const localStoredJson = JSON.stringify(localStored || null);
+  const sessionStoredJson = JSON.stringify(sessionStored || null);
+  const mergedJson = JSON.stringify(mergedStats);
+
+  if (localStored === undefined && sessionStored !== undefined) {
+    await chrome.storage.local.set({ [AUTO_RUN_STATS_KEY]: mergedStats });
+  } else if (localStoredJson !== mergedJson || sessionStoredJson !== mergedJson) {
+    await Promise.all([
+      chrome.storage.local.set({ [AUTO_RUN_STATS_KEY]: mergedStats }),
+      chrome.storage.session.set({ [AUTO_RUN_STATS_KEY]: mergedStats }),
+    ]);
+  }
+
+  return applyAutoRunStatsCache(mergedStats);
+}
+
+async function setPersistentAutoRunStats(nextStats) {
+  const normalizedStats = applyAutoRunStatsCache(nextStats);
+  await Promise.all([
+    chrome.storage.local.set({ [AUTO_RUN_STATS_KEY]: normalizedStats }),
+    chrome.storage.session.set({ [AUTO_RUN_STATS_KEY]: normalizedStats }),
+  ]);
+  return normalizedStats;
+}
+
+async function ensureAutoRunStatsLoaded() {
+  if (autoRunStatsLoaded) {
+    return autoRunStatsState;
+  }
+
+  if (!autoRunStatsLoadPromise) {
+    autoRunStatsLoadPromise = getPersistentAutoRunStats()
+      .catch((err) => {
+        console.warn(LOG_PREFIX, 'Failed to load persisted auto-run stats:', err?.message || err);
+        return applyAutoRunStatsCache(DEFAULT_STATE.autoRunStats);
+      })
+      .finally(() => {
+        autoRunStatsLoadPromise = null;
+      });
+  }
+
+  return await autoRunStatsLoadPromise;
 }
 
 async function getPersistentTmailorDomainState() {
@@ -350,14 +430,13 @@ async function resetState() {
       'seenInbucketMailIds',
       'accounts',
       'tabRegistry',
-      'autoRunStats',
       'tmailorOutcomeRecorded',
       'mailProviderUsage',
       'customPassword',
     ]),
-    Promise.all([getPersistentSettings(), getPersistentTmailorDomainState()]),
+    Promise.all([getPersistentSettings(), getPersistentTmailorDomainState(), getPersistentAutoRunStats()]),
   ]);
-  const [persistentSettings, tmailorDomainState] = persistentBundle;
+  const [persistentSettings, tmailorDomainState, autoRunStats] = persistentBundle;
   await chrome.storage.session.clear();
   await chrome.storage.session.set({
     ...DEFAULT_STATE,
@@ -367,7 +446,7 @@ async function resetState() {
     seenInbucketMailIds: prev.seenInbucketMailIds || [],
     accounts: prev.accounts || [],
     tabRegistry: prev.tabRegistry || {},
-    autoRunStats: prev.autoRunStats || DEFAULT_STATE.autoRunStats,
+    autoRunStats,
     tmailorOutcomeRecorded: false,
     mailProviderUsage: pruneMailProviderUsage(prev.mailProviderUsage || DEFAULT_STATE.mailProviderUsage),
     customPassword: prev.customPassword || '',
@@ -869,7 +948,14 @@ async function setStepStatus(step, status) {
   const state = await getState();
   const statuses = { ...state.stepStatuses };
   statuses[step] = status;
-  await setState({ stepStatuses: statuses, currentStep: step });
+  const updates = {
+    stepStatuses: statuses,
+    currentStep: step,
+  };
+  if (status === 'running') {
+    updates.currentRunStep = step;
+  }
+  await setState(updates);
   // Broadcast to side panel
   chrome.runtime.sendMessage({
     type: 'STEP_STATUS_CHANGED',
@@ -919,7 +1005,7 @@ function formatWaitDuration(waitMs) {
   return `${minutes}m ${seconds}s`;
 }
 
-async function clickWithDebugger(tabId, rect) {
+async function clickWithDebugger(tabId, rect, options = {}) {
   if (!tabId) {
     throw new Error('No auth tab found for debugger click.');
   }
@@ -940,8 +1026,20 @@ async function clickWithDebugger(tabId, rect) {
   try {
     const x = Math.round(rect.centerX);
     const y = Math.round(rect.centerY);
+    const approachX = Number.isFinite(options.approachX) ? Math.round(options.approachX) : x - 2;
+    const approachY = Number.isFinite(options.approachY) ? Math.round(options.approachY) : y + 2;
+    const holdMs = Math.max(60, Math.min(220, Number.isFinite(options.holdMs) ? Math.round(options.holdMs) : 110));
 
     await chrome.debugger.sendCommand(target, 'Page.bringToFront');
+    await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      x: approachX,
+      y: approachY,
+      button: 'none',
+      buttons: 0,
+      clickCount: 0,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
     await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
       type: 'mouseMoved',
       x,
@@ -950,6 +1048,7 @@ async function clickWithDebugger(tabId, rect) {
       buttons: 0,
       clickCount: 0,
     });
+    await new Promise((resolve) => setTimeout(resolve, 25));
     await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
       type: 'mousePressed',
       x,
@@ -958,6 +1057,7 @@ async function clickWithDebugger(tabId, rect) {
       buttons: 1,
       clickCount: 1,
     });
+    await new Promise((resolve) => setTimeout(resolve, holdMs));
     await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
       type: 'mouseReleased',
       x,
@@ -1253,7 +1353,11 @@ async function handleMessage(message, sender) {
       if (!tabId) {
         return { error: 'Debugger click failed: no sender tab available.' };
       }
-      await clickWithDebugger(tabId, message.payload?.rect);
+      await clickWithDebugger(tabId, message.payload?.rect, {
+        approachX: message.payload?.approachX,
+        approachY: message.payload?.approachY,
+        holdMs: message.payload?.holdMs,
+      });
       return { ok: true };
     }
 
@@ -1328,6 +1432,7 @@ function notifyStepError(step, error) {
 }
 
 async function setAutoRunStats(successfulRunsOrStats, failedRuns) {
+  await ensureAutoRunStatsLoaded();
   const nextStats = typeof successfulRunsOrStats === 'object' && successfulRunsOrStats !== null
     ? normalizeAutoRunStats(successfulRunsOrStats)
     : normalizeAutoRunStats({
@@ -1339,10 +1444,7 @@ async function setAutoRunStats(successfulRunsOrStats, failedRuns) {
         failureBuckets: autoRunStatsState.failureBuckets,
       });
 
-  autoRunSuccessfulRuns = nextStats.successfulRuns;
-  autoRunFailedRuns = nextStats.failedRuns;
-  autoRunStatsState = nextStats;
-  await setState({ autoRunStats: nextStats });
+  await setPersistentAutoRunStats(nextStats);
   broadcastDataUpdate({ autoRunStats: nextStats });
   return nextStats;
 }
@@ -1421,6 +1523,7 @@ async function runManualFlow(startStep) {
     });
     await addLog('Manual continuation completed through step 9', 'ok');
     if (handedOffPausedAutoRun && inheritedRunContext) {
+      await ensureAutoRunStatsLoaded();
       await setAutoRunStats(recordAutoRunSuccess(autoRunStatsState, {
         durationMs: Math.max(0, Date.now() - (inheritedRunContext.startedAt || Date.now())),
         mode: autoRunCurrentSuccessMode || inheritedRunContext.successMode,
@@ -1564,11 +1667,19 @@ async function executeStep(step) {
  * @param {number} step
  * @param {number} delayAfter - ms to wait after completion (for page transitions)
  */
-async function executeStepAndWait(step, delayAfter = 2000) {
+async function executeStepAndWait(step, delayAfter = 2000, recoveredStep3Timeout = false) {
   throwIfStopped();
   const promise = waitForStepComplete(step, 120000);
-  await executeStep(step);
-  await promise;
+  try {
+    await executeStep(step);
+    await promise;
+  } catch (err) {
+    if (step === 3 && !recoveredStep3Timeout && shouldRetryStep3WithFreshOauth(err)) {
+      await recoverStep3OauthTimeout();
+      return await executeStepAndWait(step, delayAfter, true);
+    }
+    throw err;
+  }
   // Extra delay for page transitions / DOM updates
   if (delayAfter > 0) {
     await sleepWithStop(delayAfter + Math.floor(Math.random() * 1200));
@@ -1619,7 +1730,7 @@ function getEmailWaitHint(emailSource) {
     return 'Configure the 33mail domain or generate an email manually, then continue';
   }
   if (emailSource === 'tmailor') {
-    return 'Open TMailor and generate a supported mailbox, then continue';
+    return 'Open TMailor and generate a supported mailbox, or switch to com+whitelist mode and continue';
   }
   return 'Fetch Duck email or paste manually, then continue';
 }
@@ -1704,6 +1815,7 @@ async function fetchTmailorEmail(options = {}) {
   throwIfStopped();
   const { generateNew = true } = options;
   const state = await getState();
+  const mailboxPageConfig = { source: 'tmailor-mail', url: 'https://tmailor.com/' };
 
   if (generateNew) {
     try {
@@ -1733,17 +1845,25 @@ async function fetchTmailorEmail(options = {}) {
   }
 
   await addLog(`TMailor: Opening mailbox page (${generateNew ? 'generate new' : 'reuse current'})...`);
-  await reuseOrCreateTab('tmailor-mail', 'https://tmailor.com/');
+  await reuseOrCreateTab(mailboxPageConfig.source, mailboxPageConfig.url);
   await addLog('TMailor: Mailbox page opened. Waiting for the content script handshake before starting mailbox automation...', 'info');
 
-  const result = await sendToContentScript('tmailor-mail', {
+  const command = {
     type: 'FETCH_TMAILOR_EMAIL',
     source: 'background',
     payload: {
       generateNew,
       domainState: state.tmailorDomainState,
     },
-  });
+  };
+  let result = await sendToContentScript(mailboxPageConfig.source, command);
+
+  if (result?.recovery === 'reload_mailbox') {
+    await addLog('TMailor: Mailbox page requested a background reload. Reopening the mailbox page and retrying once...', 'warn');
+    await reviveMailTab(mailboxPageConfig);
+    await sleepWithStop(1200);
+    result = await sendToContentScript(mailboxPageConfig.source, command);
+  }
 
   if (result?.error) {
     throw new Error(result.error);
@@ -1797,12 +1917,16 @@ function markAutoRunCurrentSuccessMode(mode) {
 }
 
 async function recordVisibleAutoRunFailure(errorMessage, overrides = {}) {
+  await ensureAutoRunStatsLoaded();
+  const state = await getState();
   const failureRecord = buildAutoRunFailureRecord({
     errorMessage,
     currentRun: overrides.currentRun ?? autoRunCurrentRun,
     totalRuns: overrides.totalRuns ?? autoRunTotalRuns,
     infiniteMode: overrides.infiniteMode ?? autoRunInfinite,
     step: overrides.step ?? 0,
+    currentRunStep: overrides.currentRunStep ?? state.currentRunStep ?? 0,
+    currentStep: overrides.currentStep ?? state.currentStep ?? 0,
     timestamp: overrides.timestamp ?? Date.now(),
   });
 
@@ -1865,15 +1989,9 @@ async function autoRunLoop(totalRuns, infiniteMode = false, options = {}) {
   manualHandoffRunContext = null;
   autoRunCurrentRunStartedAt = 0;
   resetAutoRunCurrentSuccessMode();
+  await ensureAutoRunStatsLoaded();
   if (!preserveStats) {
-    await setAutoRunStats({
-      successfulRuns: 0,
-      failedRuns: 0,
-      totalSuccessfulDurationMs: 0,
-      recentSuccessDurationsMs: [],
-      recentSuccessEntries: [],
-      failureBuckets: [],
-    });
+    await setAutoRunStats(resetAutoRunFailureStats(autoRunStatsState));
   }
   await setState({ autoRunning: true });
   let handedOffToManual = false;
@@ -1999,10 +2117,12 @@ async function autoRunLoop(totalRuns, infiniteMode = false, options = {}) {
       });
 
       await addLog(`=== Run ${runTargetText} COMPLETE! ===`, 'ok');
+      await ensureAutoRunStatsLoaded();
       await setAutoRunStats(recordAutoRunSuccess(autoRunStatsState, {
         durationMs: Math.max(0, Date.now() - runStartedAt),
         mode: autoRunCurrentSuccessMode,
       }));
+      await setState({ currentRunStep: 0 });
 
     } catch (err) {
       if (isAutoRunHandoffError(err)) {
@@ -2011,6 +2131,7 @@ async function autoRunLoop(totalRuns, infiniteMode = false, options = {}) {
         break;
       } else if (isStopError(err)) {
         await addLog(`Run ${runTargetText} stopped by user`, 'warn');
+        await setState({ currentRunStep: 0 });
         break;
       } else {
         const failureRecord = await recordVisibleAutoRunFailure(err.message, {
@@ -2019,6 +2140,7 @@ async function autoRunLoop(totalRuns, infiniteMode = false, options = {}) {
           infiniteMode: autoRunInfinite,
         });
         await addLog(failureRecord.logMessage, 'error');
+        await setState({ currentRunStep: 0 });
         if (autoRunInfinite || run < totalRuns) {
           if (/step 5 failed: .*unsupported_email|step 5 failed: auth fatal error page detected after profile submit\./i.test(err.message || '')) {
             await addLog(`Run ${runTargetText}: TMailor domain was blocked during step 5. Marked as failed and moving to the next run.`, 'warn');
@@ -2102,7 +2224,7 @@ async function executeStep1(state) {
   }
   await addLog(`Step 1: Opening VPS panel...`);
   await reuseOrCreateTab('vps-panel', state.vpsUrl, {
-    inject: ['content/utils.js', 'content/vps-panel.js'],
+    inject: ['shared/flow-recovery.js', 'content/utils.js', 'content/vps-panel.js'],
     reloadIfSameUrl: true,
   });
 
@@ -2159,13 +2281,17 @@ async function executeStep3(state) {
     throw new Error('No email address. Paste email in Side Panel first.');
   }
 
-  const password = state.customPassword || generatePassword();
+  const password = state.customPassword || state.password || generatePassword();
+  await setEmailState(email);
   await setPasswordState(password);
 
   // Save account record
   const accounts = state.accounts || [];
-  accounts.push({ email, password, createdAt: new Date().toISOString() });
-  await setState({ accounts });
+  const lastAccount = accounts[accounts.length - 1];
+  if (!lastAccount || lastAccount.email !== email || lastAccount.password !== password) {
+    accounts.push({ email, password, createdAt: new Date().toISOString() });
+    await setState({ accounts });
+  }
 
   await addLog(
     `Step 3: Filling email ${email}, password ${state.customPassword ? 'customized' : 'generated'} (${password.length} chars)`
@@ -2243,10 +2369,11 @@ async function clickResendOnSignupPage(step) {
   }
 }
 
-async function ensureMailTabReady(mail) {
+async function ensureMailTabReady(mail, options = {}) {
   const alive = await isTabAlive(mail.source);
+  const navigateIfUrlDiff = Boolean(options.navigateIfUrlDiff);
   if (alive) {
-    if (mail.navigateOnReuse) {
+    if (mail.navigateOnReuse || navigateIfUrlDiff) {
       await reuseOrCreateTab(mail.source, mail.url, {
         inject: mail.inject,
         injectSource: mail.injectSource,
@@ -2442,7 +2569,15 @@ async function executeVerificationMailStep(step, state, options) {
     persistLastEmailTimestamp = false,
   } = options;
 
-  const mail = getMailConfig(state);
+  const baseMail = getMailConfig(state);
+  const mail = {
+    ...baseMail,
+    url: getMailTabOpenUrlForStep({
+      step,
+      mailSource: baseMail.source,
+      defaultUrl: baseMail.url,
+    }),
+  };
   if (mail.error) throw new Error(mail.error);
   const useTmailorApiMailboxOnly = shouldUseTmailorApiMailboxOnly({
     mailSource: mail.source,
@@ -2452,7 +2587,12 @@ async function executeVerificationMailStep(step, state, options) {
     await addLog(`Step ${step}: ${getTmailorApiOnlyPollingMessage(state.email)}`, 'info');
   } else {
     await addLog(`Step ${step}: Opening ${mail.label}...`);
-    await ensureMailTabReady(mail);
+    await ensureMailTabReady(mail, {
+      navigateIfUrlDiff: shouldNavigateMailTabOnStepStart({
+        step,
+        mailSource: mail.source,
+      }),
+    });
   }
 
   const rejectedCodes = new Set();
@@ -2560,8 +2700,8 @@ async function executeStep5(state) {
 // Step 6: Login ChatGPT (Background opens tab, chatgpt.js handles login)
 // ============================================================
 
-async function refreshOauthUrlForManualStep6(state) {
-  await addLog('Step 6: Manual run detected. Refreshing the VPS OAuth link before login...', 'info');
+async function refreshOauthUrl(state, stepLabel, reason) {
+  await addLog(`${stepLabel}: ${reason}`, 'info');
   const waitForRefresh = waitForStepComplete(1, 120000);
   await executeStep1(state);
   const refreshPayload = await waitForRefresh;
@@ -2572,14 +2712,43 @@ async function refreshOauthUrlForManualStep6(state) {
   };
 }
 
+async function refreshOauthUrlBeforeStep6(state, reason = 'Refreshing the VPS OAuth link before login...') {
+  return await refreshOauthUrl(state, 'Step 6', reason);
+}
+
+async function recoverStep3OauthTimeout() {
+  const state = await getState();
+  await addLog(
+    'Step 3: The signup auth page timed out before credentials could be submitted. Refreshing the VPS OAuth link and retrying once with the current email/password...',
+    'warn'
+  );
+
+  const refreshedState = await refreshOauthUrl(
+    state,
+    'Step 3',
+    'Refreshing the VPS OAuth link after the signup auth page timed out...'
+  );
+
+  if (!refreshedState.oauthUrl) {
+    throw new Error('No OAuth URL. Complete step 1 first.');
+  }
+
+  const waitForSignupPage = waitForStepComplete(2, 120000);
+  await executeStep2(refreshedState);
+  await waitForSignupPage;
+}
+
 async function executeStep6(state) {
   if (!state.email) {
     throw new Error('No email. Complete step 3 first.');
   }
 
-  const effectiveState = manualRunActive
-    ? await refreshOauthUrlForManualStep6(state)
-    : state;
+  const effectiveState = await refreshOauthUrlBeforeStep6(
+    state,
+    manualRunActive
+      ? 'Manual run detected. Refreshing the VPS OAuth link before login...'
+      : 'Refreshing the VPS OAuth link before login so the auth session stays fresh...'
+  );
 
   if (!effectiveState.oauthUrl) {
     throw new Error('No OAuth URL. Complete step 1 first.');
@@ -2784,18 +2953,57 @@ async function executeStep9(state) {
   // Inject scripts directly and wait for them to be ready
   await chrome.scripting.executeScript({
     target: { tabId },
-    files: ['content/utils.js', 'content/vps-panel.js'],
+    files: ['shared/flow-recovery.js', 'content/utils.js', 'content/vps-panel.js'],
   });
   await new Promise(r => setTimeout(r, 1000));
 
   // Send command directly — bypass queue/ready mechanism
   await addLog(`Step 9: Filling callback URL...`);
-  await chrome.tabs.sendMessage(tabId, {
+  const response = await chrome.tabs.sendMessage(tabId, {
     type: 'EXECUTE_STEP',
     step: 9,
     source: 'background',
     payload: { localhostUrl: state.localhostUrl },
   });
+
+  if (response?.retryWithFreshOauth) {
+    await addLog(
+      `Step 9: VPS reported that the authorization link is no longer pending (${response.detail || response.reason || 'not pending'}). Refreshing OAuth and retrying steps 6-9 with the same account...`,
+      'warn'
+    );
+
+    await setState({ localhostUrl: null });
+    broadcastDataUpdate({ localhostUrl: null });
+
+    await executeStepAndWait(6, 2000);
+    await executeStepAndWait(7, 2000);
+    await executeStepAndWait(8, 1000);
+
+    const refreshedState = await getState();
+    const retryTabId = await getTabId('vps-panel') || tabId;
+    const retryResponse = await chrome.tabs.sendMessage(retryTabId, {
+      type: 'EXECUTE_STEP',
+      step: 9,
+      source: 'background',
+      payload: { localhostUrl: refreshedState.localhostUrl },
+    });
+
+    if (retryResponse?.retryWithFreshOauth) {
+      const message = 'Step 9 failed again because the authorization link is still not pending after refreshing OAuth. Retry from step 6 once more or inspect the VPS panel manually.';
+      notifyStepError(9, message);
+      throw new Error(message);
+    }
+
+    if (retryResponse?.error) {
+      throw new Error(retryResponse.error);
+    }
+
+    return;
+  }
+
+  if (response?.error) {
+    throw new Error(response.error);
+  }
 }
 
 // ============================================================

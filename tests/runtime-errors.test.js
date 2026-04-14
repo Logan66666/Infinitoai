@@ -5,6 +5,7 @@ const {
   buildMailPollRecoveryPlan,
   isMessageChannelClosedError,
   isReceivingEndMissingError,
+  shouldRetryStep3WithFreshOauth,
 } = require('../shared/runtime-errors.js');
 
 test('detects closed message-channel errors from async listeners', () => {
@@ -46,4 +47,15 @@ test('mail poll recovery plan soft-retries before reloading after navigation dis
 
 test('mail poll recovery plan ignores unrelated mailbox errors', () => {
   assert.deepEqual(buildMailPollRecoveryPlan('No matching verification email found after 60s'), []);
+});
+
+test('step 3 oauth timeout errors trigger a fresh oauth retry plan', () => {
+  assert.equal(
+    shouldRetryStep3WithFreshOauth('Step 3 blocked: OpenAI auth page timed out before credentials could be submitted. Refresh the VPS OAuth link and retry with the same email and password.'),
+    true
+  );
+  assert.equal(
+    shouldRetryStep3WithFreshOauth('Step 3 failed: Could not find email input field on signup page.'),
+    false
+  );
 });

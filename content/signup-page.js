@@ -3,15 +3,21 @@
 
 (function() {
 if (window.__MULTIPAGE_SIGNUP_PAGE_LOADED) {
-  console.log('[MultiPage:signup-page] Content script already loaded on', location.href);
+  console.log('[Infinito.AI:signup-page] Content script already loaded on', location.href);
   return;
 }
 window.__MULTIPAGE_SIGNUP_PAGE_LOADED = true;
 
-console.log('[MultiPage:signup-page] Content script loaded on', location.href);
+console.log('[Infinito.AI:signup-page] Content script loaded on', location.href);
 const { isVerificationCodeRejectedText, isVerificationRetryStateText } = VerificationCode;
 const { getPhoneVerificationBlockedMessage, isPhoneVerificationRequiredText } = PhoneVerification;
-const { isAuthFatalErrorText } = AuthFatalErrors;
+const {
+  getAuthOperationTimedOutMessage,
+  getUnsupportedCountryRegionTerritoryMessage,
+  isAuthFatalErrorText,
+  isAuthOperationTimedOutText,
+  isUnsupportedCountryRegionTerritoryText,
+} = AuthFatalErrors;
 const { getUnsupportedEmailBlockedMessage, isUnsupportedEmailBlockingStep, isUnsupportedEmailText } = UnsupportedEmail;
 
 // Listen for commands from Background
@@ -69,6 +75,7 @@ async function handleCommand(message) {
 
 async function step2_clickRegister() {
   log('Step 2: Looking for Register/Sign up button...');
+  throwIfUnsupportedCountryRegionTerritoryBlocked(2);
 
   let registerBtn = null;
   try {
@@ -95,6 +102,12 @@ async function step2_clickRegister() {
   log('Step 2: Clicked Register button');
 }
 
+function throwIfUnsupportedCountryRegionTerritoryBlocked(step, text = getVisiblePageText()) {
+  if (isUnsupportedCountryRegionTerritoryText(text)) {
+    throw new Error(getUnsupportedCountryRegionTerritoryMessage(step));
+  }
+}
+
 // ============================================================
 // Step 3: Fill Email & Password
 // ============================================================
@@ -103,6 +116,7 @@ async function step3_fillEmailPassword(payload) {
   const { email } = payload;
   if (!email) throw new Error('No email provided. Paste email in Side Panel first.');
 
+  throwIfAuthOperationTimedOut(3);
   log(`Step 3: Filling email: ${email}`);
 
   // Find email input
@@ -113,6 +127,10 @@ async function step3_fillEmailPassword(payload) {
       10000
     );
   } catch {
+    throwIfAuthOperationTimedOut(3);
+    if (isAuthFatalErrorText(getVisiblePageText())) {
+      throw new Error('Auth fatal error page detected before the email input appeared.');
+    }
     throw new Error('Could not find email input field on signup page. URL: ' + location.href);
   }
 
@@ -139,6 +157,10 @@ async function step3_fillEmailPassword(payload) {
     try {
       passwordInput = await waitForElement('input[type="password"]', 10000);
     } catch {
+      throwIfAuthOperationTimedOut(3);
+      if (isAuthFatalErrorText(getVisiblePageText())) {
+        throw new Error('Auth fatal error page detected before the password input appeared.');
+      }
       throw new Error('Could not find password input after submitting email. URL: ' + location.href);
     }
   }
@@ -161,6 +183,12 @@ async function step3_fillEmailPassword(payload) {
     await humanPause(500, 1300);
     simulateClick(submitBtn);
     log('Step 3: Form submitted');
+  }
+}
+
+function throwIfAuthOperationTimedOut(step, text = getVisiblePageText()) {
+  if (isAuthOperationTimedOutText(text)) {
+    throw new Error(getAuthOperationTimedOutMessage(step));
   }
 }
 
