@@ -1,5 +1,5 @@
 /* ============================================================
-   Infinito.AI — Side Panel
+   Infinitoai — Side Panel
    Design: Swiss Modernism + Developer Tool
    Font: Inter (UI) + JetBrains Mono (code)
    Themes: Light (default) + Dark (toggle)
@@ -304,6 +304,13 @@ header {
 
 .data-row-stats {
   align-items: flex-start;
+}
+
+.data-row-lead-label > .data-label {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  align-self: flex-start;
 }
 
 .data-inline {

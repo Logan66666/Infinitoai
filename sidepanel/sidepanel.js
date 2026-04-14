@@ -102,8 +102,8 @@ const {
     validateTmailorEmail,
   } = TmailorDomains;
   const TMAILOR_DOMAIN_MODE_LABELS = {
-    com_only: '仅 .com / 白名单',
-    whitelist_only: '仅白名单',
+    whitelist_only: '工作模式：仅白名单',
+    com_only: '撞库模式：com域名+白名单',
   };
 const { buildToastKey, canonicalizeToastMessage, getToastDuration, shouldSuppressToastMessage } = ToastFeedback;
   let mailDomainSettingsState = createDefault33MailDomainSettings();

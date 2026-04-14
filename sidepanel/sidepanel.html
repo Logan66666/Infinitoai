@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Infinito.AI</title>
+  <title>Infinitoai</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -12,8 +12,8 @@
 <body>
   <header>
     <div class="header-left">
-      <img src="../icons/logo-panel.png" alt="Infinito.AI logo" class="brand-logo">
-      <h1>Infinito.AI</h1>
+      <img src="../icons/logo-panel.png" alt="Infinitoai logo" class="brand-logo">
+      <h1>Infinitoai</h1>
     </div>
     <div class="header-btns">
       <div class="run-group">
@@ -46,7 +46,7 @@
 
   <section id="data-section">
     <div class="data-card">
-      <div class="data-row data-row-stats">
+      <div class="data-row data-row-stats data-row-lead-label">
         <span class="data-label">Stats</span>
         <div class="run-stats-wrap">
           <details class="run-stats-panel run-stats-panel-success">
@@ -67,7 +67,7 @@
           </details>
         </div>
       </div>
-      <div class="data-row data-row-stack">
+      <div class="data-row" id="row-vps">
         <span class="data-label">VPS</span>
         <div class="data-inline">
           <input type="password" id="input-vps-url" class="data-input" placeholder="http://ip:port/management.html#/oauth" />
@@ -95,9 +95,9 @@
         <span class="data-label">Source</span>
         <div class="data-select-shell">
           <select id="select-email-source" class="data-select">
-            <option value="duck">Duck Address</option>
-            <option value="33mail">33mail</option>
-            <option value="tmailor">TMailor</option>
+            <option value="tmailor">TMailor（推荐）</option>
+            <option value="duck">Duck Address（邮件延迟）</option>
+            <option value="33mail">33mail（干净ip）</option>
           </select>
           <span class="data-select-icon" aria-hidden="true">
             <svg viewBox="0 0 16 16" fill="none">
@@ -184,7 +184,7 @@
           </div>
         </div>
       </div>
-      <div class="data-row data-row-stack" id="row-tmailor-domains" style="display:none;">
+      <div class="data-row data-row-stack data-row-lead-label" id="row-tmailor-domains" style="display:none;">
         <span class="data-label">TMailor</span>
         <div class="tmailor-domain-content">
           <div class="tmailor-api-row">
