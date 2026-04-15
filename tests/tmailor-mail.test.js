@@ -1977,7 +1977,7 @@ test('tmailor clicks Confirm after 10 seconds of slow checkbox attempts when the
   const hooks = context.__MULTIPAGE_TMAILOR_TEST_HOOKS;
   assert.ok(hooks?.waitForCloudflareConfirm, 'expected tmailor to expose waitForCloudflareConfirm');
 
-  const handled = await hooks.waitForCloudflareConfirm(18000);
+  const handled = await hooks.waitForCloudflareConfirm(30000);
 
   assert.equal(handled, true);
   assert.ok(state.runtimeMessages?.some((entry) => entry.type === 'DEBUGGER_CLICK_AT'));
@@ -2072,7 +2072,7 @@ test('tmailor logs Cloudflare state snapshots and a timeout summary when verific
   );
 });
 
-test('tmailor rotates turnstile hotspots within the checkbox lane and stops additional clicks after 8 no-token attempts', async () => {
+test('tmailor keeps rotating turnstile hotspots beyond the old 8-click cap while time remains', async () => {
   const context = createContext();
   const state = context.__state;
   let now = 0;
@@ -2146,7 +2146,7 @@ test('tmailor rotates turnstile hotspots within the checkbox lane and stops addi
 
   assert.equal(handled, false);
   const clickMessages = (state.runtimeMessages || []).filter((entry) => entry.type === 'DEBUGGER_CLICK_AT');
-  assert.equal(clickMessages.length, 8);
+  assert.equal(clickMessages.length, 11);
   const points = clickMessages.map((entry) => ({
     x: Math.round(entry.payload.rect.centerX),
     y: Math.round(entry.payload.rect.centerY),
@@ -2155,12 +2155,104 @@ test('tmailor rotates turnstile hotspots within the checkbox lane and stops addi
   assert.ok(points.every((point) => point.y >= 561 && point.y <= 577), 'expected hotspot y positions to stay near the checkbox centerline');
   assert.ok(new Set(points.map((point) => `${point.x},${point.y}`)).size > 1, 'expected hotspot rotation across retries');
   assert.ok(
-    state.logs.some((entry) => /Cloudflare checkbox hotspot \(attempt 8\/8/i.test(entry.message)),
-    'expected the 8th hotspot attempt log'
+    state.logs.some((entry) => /Cloudflare checkbox hotspot \(attempt 11\/12/i.test(entry.message)),
+    'expected the 11th hotspot attempt log'
   );
   assert.ok(
-    state.logs.some((entry) => /Cloudflare auto-attempt reached 8 checkbox clicks without receiving a token/i.test(entry.message)),
-    'expected a no-token threshold log'
+    state.logs.every((entry) => !/Cloudflare auto-attempt reached 8 checkbox clicks without receiving a token/i.test(entry.message)),
+    'expected the old 8-click stop log to stay absent'
+  );
+});
+
+test('tmailor can still solve a slow turnstile when the token only appears after the 10th checkbox click', async () => {
+  const context = createContext();
+  const state = context.__state;
+  let now = 0;
+  let responseToken = '';
+  let clickCount = 0;
+  context.Date = class extends Date {
+    static now() {
+      return now;
+    }
+  };
+
+  const turnstileContainer = {
+    tagName: 'DIV',
+    className: 'cf-turnstile h-[80px] flex items-center justify-center',
+    getBoundingClientRect() {
+      return { left: 137, top: 570, width: 300, height: 80 };
+    },
+  };
+
+  const confirmButton = {
+    id: 'btnNewEmailForm',
+    tagName: 'BUTTON',
+    textContent: 'Confirm',
+    disabled: false,
+    getAttribute(name) {
+      if (name === 'aria-disabled') {
+        return 'false';
+      }
+      return null;
+    },
+    getBoundingClientRect() {
+      return { left: 226, top: 662, width: 122, height: 41 };
+    },
+  };
+
+  context.document.body.innerText = 'Create New Email Please verify that you are not a robot. Confirm';
+  context.document.querySelector = (selector) => {
+    if (selector === '#btnNewEmailForm') {
+      return confirmButton;
+    }
+    if (selector === '.cf-turnstile' || selector.includes('.cf-turnstile') || selector.includes('.html-captcha')) {
+      return turnstileContainer;
+    }
+    if (selector.includes('input[name="cf-turnstile-response"]')) {
+      return { value: responseToken };
+    }
+    return null;
+  };
+  context.document.querySelectorAll = (selector) => {
+    if (selector === 'button, [role="button"], a, summary') {
+      return [confirmButton];
+    }
+    return [];
+  };
+  context.chrome.runtime.sendMessage = (message, callback) => {
+    state.runtimeMessages = state.runtimeMessages || [];
+    state.runtimeMessages.push(message);
+    if (message.type === 'DEBUGGER_CLICK_AT') {
+      clickCount += 1;
+      if (clickCount >= 10) {
+        responseToken = 'late-turnstile-token';
+      }
+    }
+    const response = { ok: true };
+    if (typeof callback === 'function') {
+      callback(response);
+    }
+    return Promise.resolve(response);
+  };
+  context.sleep = async (ms = 0) => {
+    now += ms;
+  };
+
+  loadTmailorScript(context);
+  const hooks = context.__MULTIPAGE_TMAILOR_TEST_HOOKS;
+  assert.ok(hooks?.waitForCloudflareConfirm, 'expected tmailor to expose waitForCloudflareConfirm');
+
+  const handled = await hooks.waitForCloudflareConfirm(30000);
+
+  assert.equal(handled, true);
+  assert.equal(clickCount, 10);
+  assert.ok(
+    state.logs.some((entry) => /Cloudflare checkbox hotspot \(attempt 10\/12/i.test(entry.message)),
+    'expected the 10th hotspot attempt log before success'
+  );
+  assert.ok(
+    state.logs.some((entry) => /Cloudflare Confirm trigger: reason=post-click-check; token=yes/i.test(entry.message)),
+    'expected a post-click confirm trigger after the late token arrived'
   );
 });
 
@@ -4112,6 +4204,190 @@ test('tmailor default Cloudflare timeout allows a token that appears after 13 se
     now += ms;
     if (!responseToken && now >= 13000) {
       responseToken = 'verified-token-after-13s';
+    }
+  };
+
+  loadTmailorScript(context);
+  const hooks = context.__MULTIPAGE_TMAILOR_TEST_HOOKS;
+  assert.ok(hooks?.ensureCloudflareChallengeClearedOrThrow, 'expected tmailor to expose ensureCloudflareChallengeClearedOrThrow');
+
+  const cleared = await hooks.ensureCloudflareChallengeClearedOrThrow();
+
+  assert.equal(cleared, true);
+  assert.equal(state.lastClicked?.id, 'btnNewEmailForm');
+});
+
+test('tmailor default Cloudflare timeout allows a token that appears after 20 seconds', async () => {
+  const context = createContext();
+  const state = context.__state;
+  let now = 0;
+  let responseToken = '';
+  let challengeVisible = true;
+  context.Date = class extends Date {
+    static now() {
+      return now;
+    }
+  };
+
+  const turnstileContainer = {
+    tagName: 'DIV',
+    className: 'cf-turnstile h-[80px] flex items-center justify-center',
+    getBoundingClientRect() {
+      return { left: 186, top: 529, width: 300, height: 80 };
+    },
+  };
+  const confirmButton = {
+    id: 'btnNewEmailForm',
+    tagName: 'BUTTON',
+    textContent: 'Confirm',
+    disabled: false,
+    getAttribute(name) {
+      if (name === 'aria-disabled') return 'false';
+      return null;
+    },
+    getBoundingClientRect() {
+      return { left: 275, top: 621, width: 122, height: 41 };
+    },
+  };
+
+  context.document.body = {
+    get innerText() {
+      return challengeVisible ? 'Please verify that you are not a robot. Confirm' : '';
+    },
+    set innerText(value) {
+      state.bodyText = value;
+    },
+  };
+  context.document.querySelector = (selector) => {
+    if (selector === '#btnNewEmailForm') {
+      return confirmButton;
+    }
+    if (selector === '.cf-turnstile' || selector.includes('.cf-turnstile') || selector.includes('.html-captcha')) {
+      return challengeVisible ? turnstileContainer : null;
+    }
+    if (selector.includes('input[name="cf-turnstile-response"]')) {
+      return challengeVisible || responseToken ? { value: responseToken } : null;
+    }
+    return null;
+  };
+  context.document.querySelectorAll = (selector) => {
+    if (selector === 'button, [role="button"], a, summary') {
+      return [confirmButton];
+    }
+    return [];
+  };
+  context.chrome.runtime.sendMessage = (message, callback) => {
+    state.runtimeMessages = state.runtimeMessages || [];
+    state.runtimeMessages.push(message);
+    const response = { ok: true };
+    if (typeof callback === 'function') {
+      callback(response);
+    }
+    return Promise.resolve(response);
+  };
+  context.simulateClick = (target) => {
+    state.clicked += 1;
+    state.lastClicked = target;
+    if (target === confirmButton) {
+      challengeVisible = false;
+    }
+  };
+  context.sleep = async (ms = 0) => {
+    now += ms;
+    if (!responseToken && now >= 20000) {
+      responseToken = 'verified-token-after-20s';
+    }
+  };
+
+  loadTmailorScript(context);
+  const hooks = context.__MULTIPAGE_TMAILOR_TEST_HOOKS;
+  assert.ok(hooks?.ensureCloudflareChallengeClearedOrThrow, 'expected tmailor to expose ensureCloudflareChallengeClearedOrThrow');
+
+  const cleared = await hooks.ensureCloudflareChallengeClearedOrThrow();
+
+  assert.equal(cleared, true);
+  assert.equal(state.lastClicked?.id, 'btnNewEmailForm');
+});
+
+test('tmailor default Cloudflare timeout allows a token that appears after 26 seconds', async () => {
+  const context = createContext();
+  const state = context.__state;
+  let now = 0;
+  let responseToken = '';
+  let challengeVisible = true;
+  context.Date = class extends Date {
+    static now() {
+      return now;
+    }
+  };
+
+  const turnstileContainer = {
+    tagName: 'DIV',
+    className: 'cf-turnstile h-[80px] flex items-center justify-center',
+    getBoundingClientRect() {
+      return { left: 186, top: 529, width: 300, height: 80 };
+    },
+  };
+  const confirmButton = {
+    id: 'btnNewEmailForm',
+    tagName: 'BUTTON',
+    textContent: 'Confirm',
+    disabled: false,
+    getAttribute(name) {
+      if (name === 'aria-disabled') return 'false';
+      return null;
+    },
+    getBoundingClientRect() {
+      return { left: 275, top: 621, width: 122, height: 41 };
+    },
+  };
+
+  context.document.body = {
+    get innerText() {
+      return challengeVisible ? 'Please verify that you are not a robot. Confirm' : '';
+    },
+    set innerText(value) {
+      state.bodyText = value;
+    },
+  };
+  context.document.querySelector = (selector) => {
+    if (selector === '#btnNewEmailForm') {
+      return confirmButton;
+    }
+    if (selector === '.cf-turnstile' || selector.includes('.cf-turnstile') || selector.includes('.html-captcha')) {
+      return challengeVisible ? turnstileContainer : null;
+    }
+    if (selector.includes('input[name="cf-turnstile-response"]')) {
+      return challengeVisible || responseToken ? { value: responseToken } : null;
+    }
+    return null;
+  };
+  context.document.querySelectorAll = (selector) => {
+    if (selector === 'button, [role="button"], a, summary') {
+      return [confirmButton];
+    }
+    return [];
+  };
+  context.chrome.runtime.sendMessage = (message, callback) => {
+    state.runtimeMessages = state.runtimeMessages || [];
+    state.runtimeMessages.push(message);
+    const response = { ok: true };
+    if (typeof callback === 'function') {
+      callback(response);
+    }
+    return Promise.resolve(response);
+  };
+  context.simulateClick = (target) => {
+    state.clicked += 1;
+    state.lastClicked = target;
+    if (target === confirmButton) {
+      challengeVisible = false;
+    }
+  };
+  context.sleep = async (ms = 0) => {
+    now += ms;
+    if (!responseToken && now >= 26000) {
+      responseToken = 'verified-token-after-26s';
     }
   };
 

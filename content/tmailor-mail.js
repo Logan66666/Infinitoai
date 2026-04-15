@@ -10,8 +10,8 @@ const { findLatestMatchingItem } = LatestMail;
 const { getStepMailMatchProfile, matchesSubjectPatterns, normalizeText } = MailMatching;
 const { isMailFresh, parseMailTimestampCandidates } = MailFreshness;
 const EMAIL_REGEX = /\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b/i;
-const DEFAULT_CLOUDFLARE_TIMEOUT_MS = 18000;
-const MAX_CLOUDFLARE_CHECKBOX_ATTEMPTS = 8;
+const DEFAULT_CLOUDFLARE_TIMEOUT_MS = 30000;
+const MAX_CLOUDFLARE_CHECKBOX_ATTEMPTS = 12;
 const TMAILOR_SKIP_READY_COUNTDOWN = 25;
 const CLOUDFLARE_TURNSTILE_HOTSPOTS = [
   { xRatio: 0.12, yOffset: 0 },
