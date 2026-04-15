@@ -9,6 +9,7 @@ const {
   formatAutoRunLabel,
   shouldContinueAutoRunAfterWatchdog,
   shouldStartNextInfiniteRunAfterManualFlow,
+  shouldSuspendAutoRunWatchdogDuringPause,
   shouldContinueAutoRunAfterError,
   summarizeAutoRunResult,
 } = require('../shared/auto-run.js');
@@ -65,6 +66,21 @@ test('manual rounds restart the next loop only when infinite mode is enabled and
   );
   assert.equal(
     shouldStartNextInfiniteRunAfterManualFlow({ autoRunInfinite: true, stopRequested: true }),
+    false
+  );
+});
+
+test('watchdog pause policy keeps email handoff timeouts active in infinite mode only', () => {
+  assert.equal(
+    shouldSuspendAutoRunWatchdogDuringPause({ phase: 'waiting_rotation', infiniteMode: true }),
+    true
+  );
+  assert.equal(
+    shouldSuspendAutoRunWatchdogDuringPause({ phase: 'waiting_email', infiniteMode: false }),
+    true
+  );
+  assert.equal(
+    shouldSuspendAutoRunWatchdogDuringPause({ phase: 'waiting_email', infiniteMode: true }),
     false
   );
 });

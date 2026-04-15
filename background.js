@@ -30,6 +30,7 @@ const {
   shouldStartNextInfiniteRunAfterManualFlow,
   summarizeAutoRunResult,
 } = AutoRun;
+  shouldSuspendAutoRunWatchdogDuringPause,
 const {
   normalizeAutoRunStats,
   recordAutoRunFailure,
@@ -2340,11 +2341,25 @@ async function autoRunLoop(totalRuns, infiniteMode = false, options = {}) {
         sendAutoRunStatus('waiting_email', { currentRun: run });
 
         // Wait for RESUME_AUTO_RUN — sets a promise that resumeAutoRun resolves
-        suspendAutoRunWatchdog();
-        try {
-          await waitForResume();
-        } finally {
-          resumeAutoRunWatchdog({ resetActivity: true });
+        const shouldSuspendWatchdogDuringPause = shouldSuspendAutoRunWatchdogDuringPause({
+          phase: 'waiting_email',
+          infiniteMode: autoRunInfinite,
+        });
+        const resumePromise = waitForResume();
+        if (shouldSuspendWatchdogDuringPause) {
+          suspendAutoRunWatchdog();
+          try {
+            await resumePromise;
+          } finally {
+            resumeAutoRunWatchdog({ resetActivity: true });
+          }
+        } else {
+          const watchdogPromise = autoRunActive ? getAutoRunWatchdogPromise() : null;
+          if (watchdogPromise) {
+            await Promise.race([resumePromise, watchdogPromise]);
+          } else {
+            await resumePromise;
+          }
         }
 
         const resumedState = await getState();

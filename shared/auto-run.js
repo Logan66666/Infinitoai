@@ -158,6 +158,17 @@
     }
 
     const run = Math.max(0, Number.parseInt(String(currentRun ?? 0).trim(), 10) || 0);
+  function shouldSuspendAutoRunWatchdogDuringPause({
+    phase = '',
+    infiniteMode = false,
+  } = {}) {
+    const normalizedPhase = String(phase || '').trim().toLowerCase();
+    if (normalizedPhase === 'waiting_email') {
+      return !Boolean(infiniteMode);
+    }
+    return true;
+  }
+
     const total = Math.max(0, Number.parseInt(String(totalRuns ?? 0).trim(), 10) || 0);
     return run < total;
   }
@@ -328,3 +339,4 @@
     summarizeAutoRunResult,
   };
 });
+    shouldSuspendAutoRunWatchdogDuringPause,
