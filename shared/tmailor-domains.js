@@ -346,11 +346,13 @@
       message.includes('email domain is unsupported') ||
       message.includes('unsupported email');
     const matchesPhoneVerification =
+      message.includes('phone number is required on the auth page') ||
       message.includes('phone verification') ||
       message.includes('auth page still requires phone verification');
     const matchesFatal = message.includes('auth fatal error page detected after profile submit');
+    const matchesMissingNameInput = message.includes('could not find name input');
 
-    return matchesEmailUnsupported || matchesPhoneVerification || matchesFatal;
+    return matchesEmailUnsupported || matchesPhoneVerification || matchesFatal || matchesMissingNameInput;
   }
 
   return {

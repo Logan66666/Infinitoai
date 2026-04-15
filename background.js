@@ -21,6 +21,7 @@ const {
 } = RuntimeErrors;
 const {
   DEFAULT_AUTO_RUN_LOG_SILENCE_TIMEOUT_MS,
+  decorateAuthFailureWithEmailDomain,
   buildAutoRunLogSilenceErrorMessage,
   buildAutoRunStatusPayload,
   buildAutoRunFailureRecord,
@@ -1194,10 +1195,12 @@ async function handleMessage(message, sender) {
         await addLog(`Step ${message.step} stopped by user`, 'warn');
         notifyStepError(message.step, message.error);
       } else {
+        const currentState = await getState();
+        const displayedError = decorateAuthFailureWithEmailDomain(message.error, currentState?.email);
         await setStepStatus(message.step, 'failed');
-        await addLog(`Step ${message.step} failed: ${message.error}`, 'error');
-        await recordTmailorOutcome('failure', { step: message.step, errorMessage: message.error });
-        notifyStepError(message.step, message.error);
+        await addLog(`Step ${message.step} failed: ${displayedError}`, 'error');
+        await recordTmailorOutcome('failure', { step: message.step, errorMessage: displayedError });
+        notifyStepError(message.step, displayedError);
       }
       return { ok: true };
     }
@@ -1730,9 +1733,10 @@ async function executeStep(step) {
     }
     if (!shouldSkipStepResultLog(currentStepStatus)) {
       await setStepStatus(step, 'failed');
-      await addLog(`Step ${step} failed: ${err.message}`, 'error');
+    const displayedError = decorateAuthFailureWithEmailDomain(err.message, latestState?.email);
+      await addLog(`Step ${step} failed: ${displayedError}`, 'error');
     }
-    throw err;
+    throw new Error(displayedError);
   }
 }
 
@@ -2435,7 +2439,7 @@ async function autoRunLoop(totalRuns, infiniteMode = false, options = {}) {
         await addLog(failureRecord.logMessage, 'error');
         await setState({ currentRunStep: 0 });
         if (autoRunInfinite || run < totalRuns) {
-          if (/step 5 failed: .*unsupported_email|step 5 failed: auth fatal error page detected after profile submit\./i.test(err.message || '')) {
+          if (/step 5 failed: .*unsupported_email|step 5 failed: auth fatal error page detected after profile submit\.|step 5 failed: could not find name input/i.test(err.message || '')) {
             await addLog(`Run ${runTargetText}: TMailor domain was blocked during step 5. Marked as failed and moving to the next run.`, 'warn');
           }
           await addLog(`=== Run ${runTargetText} failed. Starting next run automatically... ===`, 'warn');

@@ -380,6 +380,27 @@ test('buildAutoRunFailureRecord appends the current email suffix for phone verif
   );
 });
 
+test('buildAutoRunFailureRecord appends the current email suffix for missing-name-input blockers in stats logs', () => {
+  assert.deepEqual(
+    buildAutoRunFailureRecord({
+      errorMessage: 'Step 5 failed: Could not find name input. URL: https://auth.openai.com/u/signup/continue',
+      currentRun: 5,
+      totalRuns: Number.POSITIVE_INFINITY,
+      infiniteMode: true,
+      step: 5,
+      currentEmail: 'demo@fresh-domain.com',
+      timestamp: 333444,
+    }),
+    {
+      step: 5,
+      errorMessage: 'Step 5 failed: Could not find name input (email domain: fresh-domain.com). URL: https://auth.openai.com/u/signup/continue',
+      logMessage: 'Run 5/∞ failed: Step 5 failed: Could not find name input (email domain: fresh-domain.com). URL: https://auth.openai.com/u/signup/continue',
+      runLabel: '5/∞',
+      timestamp: 333444,
+    }
+  );
+});
+
 test('buildAutoRunLogSilenceErrorMessage describes the timeout and the last visible log', () => {
   assert.equal(
     buildAutoRunLogSilenceErrorMessage({

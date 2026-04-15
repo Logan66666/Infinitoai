@@ -88,7 +88,15 @@ test('shouldBlacklistTmailorDomainForError blacklists non-whitelisted .com domai
     true
   );
   assert.equal(
+    shouldBlacklistTmailorDomainForError(state, 'unknown-good.com', 'Step 7 blocked: phone number is required on the auth page. Please change node and retry.'),
+    true
+  );
+  assert.equal(
     shouldBlacklistTmailorDomainForError(state, 'unknown-good.com', 'Step 5 failed: Auth fatal error page detected after profile submit.'),
+    true
+  );
+  assert.equal(
+    shouldBlacklistTmailorDomainForError(state, 'unknown-good.com', 'Step 5 failed: Could not find name input. URL: https://auth.openai.com/u/signup/continue'),
     true
   );
   assert.equal(

@@ -25,12 +25,15 @@
     return normalized.slice(atIndex + 1).replace(/^@+/, '');
   }
 
-  function decoratePhoneVerificationFailureWithEmailDomain(errorMessage, currentEmail) {
+  function decorateAuthFailureWithEmailDomain(errorMessage, currentEmail) {
     const message = getErrorMessage(errorMessage);
-    if (!/phone number is required on the auth page/i.test(message)) {
+    if (/\(email domain:/i.test(message)) {
       return message;
     }
-    if (/\(email domain:/i.test(message)) {
+
+    const shouldDecoratePhoneVerification = /phone number is required on the auth page/i.test(message);
+    const shouldDecorateMissingNameInput = /could not find name input/i.test(message);
+    if (!shouldDecoratePhoneVerification && !shouldDecorateMissingNameInput) {
       return message;
     }
 
@@ -39,9 +42,16 @@
       return message;
     }
 
+    if (shouldDecoratePhoneVerification) {
+      return message.replace(
+        /phone number is required on the auth page/i,
+        `phone number is required on the auth page (email domain: ${emailDomain})`
+      );
+    }
+
     return message.replace(
-      /phone number is required on the auth page/i,
-      `phone number is required on the auth page (email domain: ${emailDomain})`
+      /could not find name input/i,
+      `Could not find name input (email domain: ${emailDomain})`
     );
   }
 
@@ -254,7 +264,7 @@
         ? normalizedCurrentRunStep
         : (Number.isFinite(normalizedCurrentStep) && normalizedCurrentStep > 0 ? normalizedCurrentStep : 0));
 
-    const decoratedErrorMessage = decoratePhoneVerificationFailureWithEmailDomain(errorMessage, currentEmail);
+    const decoratedErrorMessage = decorateAuthFailureWithEmailDomain(errorMessage, currentEmail);
     const lastLogSummary = formatLastLogSummary({ lastLogMessage, lastLogLevel });
     const decoratedLogMessage = lastLogSummary
       ? `Run ${runLabel} failed: ${decoratedErrorMessage} Last log before stall: ${lastLogSummary}`
@@ -328,6 +338,7 @@
   return {
     AUTO_RUN_LOG_SILENCE_ERROR_PREFIX,
     DEFAULT_AUTO_RUN_LOG_SILENCE_TIMEOUT_MS,
+    decorateAuthFailureWithEmailDomain,
     buildAutoRunLogSilenceErrorMessage,
     buildAutoRunStatusPayload,
     buildAutoRunFailureRecord,
