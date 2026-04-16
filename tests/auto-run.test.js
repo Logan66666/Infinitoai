@@ -430,6 +430,27 @@ test('buildAutoRunFailureRecord appends the current email suffix for missing-nam
   );
 });
 
+test('buildAutoRunFailureRecord makes unsupported-email blockers explicit in logs and toasts', () => {
+  assert.deepEqual(
+    buildAutoRunFailureRecord({
+      errorMessage: 'Step 5 blocked: email domain is unsupported on the auth page.',
+      currentRun: 8,
+      totalRuns: Number.POSITIVE_INFINITY,
+      infiniteMode: true,
+      step: 5,
+      currentEmail: 'demo@blocked-domain.com',
+      timestamp: 444555,
+    }),
+    {
+      step: 5,
+      errorMessage: 'Step 5 blocked: email domain is unsupported on the auth page (email domain: blocked-domain.com). OpenAI rejected this mailbox domain after profile submit. Retry with a new mailbox/domain.',
+      logMessage: 'Run 8/∞ failed: Step 5 blocked: email domain is unsupported on the auth page (email domain: blocked-domain.com). OpenAI rejected this mailbox domain after profile submit. Retry with a new mailbox/domain.',
+      runLabel: '8/∞',
+      timestamp: 444555,
+    }
+  );
+});
+
 test('buildAutoRunLogSilenceErrorMessage describes the timeout and the last visible log', () => {
   assert.equal(
     buildAutoRunLogSilenceErrorMessage({

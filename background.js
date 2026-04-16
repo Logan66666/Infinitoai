@@ -95,7 +95,22 @@ const RECLAIM_SOURCE_CONFIG = {
   'signup-page': {
     readyOnClaim: false,
     loadedMarker: '__MULTIPAGE_SIGNUP_PAGE_LOADED',
-    inject: ['shared/verification-code.js', 'shared/phone-verification.js', 'shared/auth-fatal-errors.js', 'shared/unsupported-email.js', 'content/utils.js', 'content/signup-page.js'],
+    inject: [
+      'shared/verification-code.js',
+      'shared/phone-verification.js',
+      'shared/auth-fatal-errors.js',
+      'shared/unsupported-email.js',
+      'content/utils.js',
+      'content/signup-page.js',
+      'content/openai-auth-step3-flow.js',
+      'content/openai-auth-step6-flow.js',
+      'content/openai-auth-step2-handler.js',
+      'content/openai-auth-step3-handler.js',
+      'content/openai-auth-step5-handler.js',
+      'content/openai-auth-step6-handler.js',
+      'content/openai-auth-step8-handler.js',
+      'content/openai-auth-actions-handler.js',
+    ],
   },
   'qq-mail': {
     readyOnClaim: true,
@@ -3244,6 +3259,31 @@ function isStep2PlatformSigningBridgePageState(pageState = {}) {
     && !pageState?.hasVisibleProfileFormInput;
 }
 
+function isStep2RecoveredAuthPageReady(pageState = {}) {
+  const url = String(pageState?.url || '').trim();
+  const hasVisibleCredentialInput = Boolean(pageState?.hasVisibleCredentialInput);
+  const hasVisibleVerificationInput = Boolean(pageState?.hasVisibleVerificationInput);
+  const hasVisibleProfileFormInput = Boolean(pageState?.hasVisibleProfileFormInput);
+
+  if (hasVisibleVerificationInput || hasVisibleProfileFormInput) {
+    return true;
+  }
+
+  if (!hasVisibleCredentialInput) {
+    return false;
+  }
+
+  if (/platform\.openai\.com\/login/i.test(url)) {
+    return true;
+  }
+
+  if (/(?:auth|accounts)\.openai\.com\/(?:u\/signup\/|create-account)/i.test(url)) {
+    return true;
+  }
+
+  return false;
+}
+
 async function executeStep2(state, options = {}) {
   const replayedAfterNavigationInterrupt = Boolean(options?.replayedAfterNavigationInterrupt);
   const preferSignupEntry = Boolean(options?.preferSignupEntry);
@@ -3302,11 +3342,7 @@ async function waitForStep2CompletionSignalOrAuthPageReady() {
     }
 
     const pageState = await getSignupAuthPageState();
-    const authPageReady = Boolean(
-      pageState?.hasVisibleCredentialInput
-      || pageState?.hasVisibleVerificationInput
-      || pageState?.hasVisibleProfileFormInput
-    );
+    const authPageReady = isStep2RecoveredAuthPageReady(pageState);
 
     if (authPageReady) {
       await addLog(
@@ -3426,6 +3462,26 @@ function isExistingAccountLoginPasswordPageUrl(url = '') {
   return /(?:auth|accounts)\.openai\.com\/log-?in\/password/i.test(String(url || ''));
 }
 
+function isCanonicalEmailVerificationUrl(url = '') {
+  return /(?:auth|accounts)\.openai\.com\/(?:account\/)?email-verification/i.test(String(url || ''));
+}
+
+function isStep3RecoveredAuthPageReady(pageState = {}) {
+  if (pageState?.hasReadyVerificationPage || pageState?.hasReadyProfilePage) {
+    return true;
+  }
+
+  if (pageState?.hasVisibleCredentialInput) {
+    return false;
+  }
+
+  if (pageState?.hasVisibleVerificationInput || pageState?.hasVisibleProfileFormInput) {
+    return true;
+  }
+
+  return isCanonicalEmailVerificationUrl(pageState?.url) || isCanonicalAboutYouUrl(pageState?.url);
+}
+
 async function waitForStep3CompletionSignalOrRecoveredAuthState() {
   const timeoutMs = 15000;
   const start = Date.now();
@@ -3439,17 +3495,8 @@ async function waitForStep3CompletionSignalOrRecoveredAuthState() {
     }
 
     const pageState = await getSignupAuthPageState();
-    const advancedPastCredentialForm = Boolean(
-      pageState?.hasVisibleVerificationInput
-      || pageState?.hasVisibleProfileFormInput
-      || (
-        pageState?.url
-        && !pageState?.hasVisibleCredentialInput
-        && !isExistingAccountLoginPasswordPageUrl(pageState?.url)
-      )
-    );
 
-    if (advancedPastCredentialForm || pageState?.hasReadyVerificationPage || pageState?.hasReadyProfilePage) {
+    if (isStep3RecoveredAuthPageReady(pageState)) {
       const payload = { recoveredAfterNavigation: true };
       await addLog(
         'Step 3: Auth page already advanced beyond the credential form after the navigation interrupt. Completing the step from the background fallback.',
@@ -4490,12 +4537,67 @@ async function executeStep5(state) {
 
   await addLog(`Step 5: Generated name: ${firstName} ${lastName}, Birthday: ${year}-${month}-${day}`);
 
-  await sendToContentScript('signup-page', {
-    type: 'EXECUTE_STEP',
-    step: 5,
-    source: 'background',
-    payload: { firstName, lastName, year, month, day },
-  });
+  try {
+    await sendToContentScript('signup-page', {
+      type: 'EXECUTE_STEP',
+      step: 5,
+      source: 'background',
+      payload: { firstName, lastName, year, month, day },
+    });
+  } catch (err) {
+    const errorMessage = err?.message || String(err || '');
+    if (isMessageChannelClosedError(errorMessage) || isReceivingEndMissingError(errorMessage)) {
+      await addLog(
+        'Step 5: Signup page navigated before the step-5 response returned. Continuing to wait for completion signal...',
+        'warn'
+      );
+      await waitForStep5CompletionSignalOrRecoveredAuthState();
+      return;
+    }
+    throw err;
+  }
+}
+
+async function waitForStep5CompletionSignalOrRecoveredAuthState() {
+  const timeoutMs = 15000;
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    const currentState = await getState();
+    const currentStepStatus = currentState?.stepStatuses?.[5];
+
+    if (currentStepStatus === 'completed' || currentStepStatus === 'failed' || currentStepStatus === 'stopped') {
+      return;
+    }
+
+    const pageState = await getSignupAuthPageState();
+    const advancedPastProfileForm = Boolean(
+      isStableStep5SuccessUrl(pageState?.url)
+      || (
+        pageState?.url
+        && !pageState?.hasVisibleProfileFormInput
+        && !pageState?.hasReadyProfilePage
+        && !isCanonicalAboutYouUrl(pageState?.url)
+        && !pageState?.hasUnsupportedEmail
+        && !pageState?.hasFatalError
+      )
+    );
+
+    if (advancedPastProfileForm) {
+      const payload = { recoveredAfterNavigation: true };
+      // https://platform.openai.com/welcome?step=create is a stable post-profile landing page.
+      await addLog(
+        'Step 5: Auth page already advanced beyond the profile form after the navigation interrupt. Completing the step from the background fallback. Treating https://platform.openai.com/welcome?step=create as a stable post-profile landing page.',
+        'warn'
+      );
+      await setStepStatus(5, 'completed');
+      await handleStepData(5, payload);
+      notifyStepComplete(5, { recoveredAfterNavigation: true });
+      return;
+    }
+
+    await sleepWithStop(250);
+  }
 }
 
 // ============================================================
@@ -4521,12 +4623,12 @@ async function refreshOauthUrlBeforeStep6(state, reason = 'Refreshing the VPS OA
 async function recoverStep3OauthTimeout() {
   const state = await getState();
   await addLog(
-    'Step 3: The signup page timed out before credentials could be submitted. Reopening the official signup page and retrying once with the current email/password...',
+    'Step 3: The signup page timed out before credentials could be submitted. Reopening the platform login page and retrying once with the current email/password...',
     'warn'
   );
 
   const waitForSignupPage = waitForStepComplete(2, 120000);
-  await executeStep2(state);
+  await executeStep2(state, { preferSignupEntry: true });
   await waitForSignupPage;
 }
 
@@ -4539,7 +4641,7 @@ async function recoverStep3PlatformLogin(error, options = {}) {
     ? ` (retry ${attempt}/${maxAttempts})`
     : '';
   await addLog(
-    `Step 3: ${message} Reopening the official signup page${retryLabel} and retrying with the current email/password...`,
+    `Step 3: ${message} Reopening the platform login page${retryLabel} and retrying with the current email/password...`,
     'warn'
   );
 

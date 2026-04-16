@@ -272,13 +272,13 @@ function log(message, level = 'info') {
 /**
  * Report that this content script is loaded and ready.
  */
-function reportReady() {
+function reportReady(payload = {}) {
   console.log(LOG_PREFIX, 'Content script ready');
   chrome.runtime.sendMessage({
     type: 'CONTENT_SCRIPT_READY',
     source: SCRIPT_SOURCE,
     step: null,
-    payload: {},
+    payload,
     error: null,
   });
 }
@@ -364,7 +364,8 @@ async function humanPause(min = 250, max = 850) {
 // Auto-report ready on load
 // Skip ready signal from child iframes of mail pages to avoid overwriting the top frame's registration
 var _isMailChildFrame = (SCRIPT_SOURCE === 'qq-mail' || SCRIPT_SOURCE === 'mail-163' || SCRIPT_SOURCE === 'inbucket-mail') && window !== window.top;
-if (!_isMailChildFrame && !__MULTIPAGE_UTILS_STATE.readyReported) {
+var _shouldDeferReadyUntilAuthHandlers = SCRIPT_SOURCE === 'signup-page';
+if (!_isMailChildFrame && !_shouldDeferReadyUntilAuthHandlers && !__MULTIPAGE_UTILS_STATE.readyReported) {
   __MULTIPAGE_UTILS_STATE.readyReported = true;
   reportReady();
 }

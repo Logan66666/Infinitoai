@@ -93,6 +93,66 @@ test('step 2 emits heartbeat logs while waiting for the platform signing bridge 
   );
 });
 
+test('auth content scripts register step 3 and step 6 through dedicated handler files instead of the mixed router switch', () => {
+  const manifestSource = readProjectFile('manifest.json');
+  const backgroundSource = readProjectFile('background.js');
+  const signupSource = readProjectFile(path.join('content', 'signup-page.js'));
+
+  assert.match(manifestSource, /openai-auth-step3-handler\.js/i);
+  assert.match(manifestSource, /openai-auth-step6-handler\.js/i);
+  assert.match(backgroundSource, /openai-auth-step2-handler\.js/i);
+  assert.match(backgroundSource, /openai-auth-step3-handler\.js/i);
+  assert.match(backgroundSource, /openai-auth-step5-handler\.js/i);
+  assert.match(backgroundSource, /openai-auth-step6-handler\.js/i);
+  assert.match(backgroundSource, /openai-auth-step8-handler\.js/i);
+  assert.match(backgroundSource, /openai-auth-actions-handler\.js/i);
+  assert.match(signupSource, /getRegisteredStepMetadata/i);
+  assert.doesNotMatch(
+    signupSource,
+    /switch \(message\.step\) \{[\s\S]*case 3: return await step3_fillEmailPassword\(message\.payload\);[\s\S]*case 6: return await step6_login\(message\.payload\);/i
+  );
+});
+
+test('step 3 and step 6 implementations live in separate flow files while signup-page stays as the shared auth shell', () => {
+  const manifestSource = readProjectFile('manifest.json');
+  const signupSource = readProjectFile(path.join('content', 'signup-page.js'));
+  const step3FlowSource = readProjectFile(path.join('content', 'openai-auth-step3-flow.js'));
+  const step6FlowSource = readProjectFile(path.join('content', 'openai-auth-step6-flow.js'));
+
+  assert.match(manifestSource, /openai-auth-step3-flow\.js/i);
+  assert.match(manifestSource, /openai-auth-step6-flow\.js/i);
+  assert.doesNotMatch(signupSource, /async function step3_fillEmailPassword\(/i);
+  assert.doesNotMatch(signupSource, /async function step6_login\(/i);
+  assert.match(step3FlowSource, /async function step3_fillEmailPassword\(/i);
+  assert.match(step6FlowSource, /async function step6_login\(/i);
+});
+
+test('readme describes the platform signup-entry flow separately from the oauth login flow', () => {
+  const readmeSource = readProjectFile('README.md');
+
+  assert.match(readmeSource, /Platform Signup Entry Flow|平台注册入口流/i);
+  assert.match(readmeSource, /OAuth Login Flow|OAuth 登录流/i);
+  assert.match(readmeSource, /Step 2[\s\S]*Step 3[\s\S]*Step 4[\s\S]*Step 5/i);
+  assert.match(readmeSource, /Step 6[\s\S]*Step 7[\s\S]*Step 8[\s\S]*Step 9/i);
+});
+
+test('platform chat logout recovery forces the flow back to the platform login entry', () => {
+  const signupSource = readProjectFile(path.join('content', 'signup-page.js'));
+
+  assert.match(
+    signupSource,
+    /async function logoutFromPlatformChatSessionIfNeeded\(\) \{[\s\S]*await clickPlatformLogoutAction\(logoutLabel\);[\s\S]*await waitForPlatformLogoutRedirect\(\);[\s\S]*await ensurePlatformLoginEntryAfterLogout\(\);[\s\S]*Logged out of the existing platform chat session and returned to the login page/i
+  );
+  assert.match(
+    signupSource,
+    /async function ensurePlatformLoginEntryAfterLogout\([^)]*\) \{[\s\S]*location\.href = PLATFORM_LOGIN_ENTRY_URL;[\s\S]*Timed out waiting for the platform login entry after logout/i
+  );
+  assert.doesNotMatch(
+    signupSource,
+    /if \/\(auth\\\.openai\\\.com\\\/log-in\|platform\\\.openai\\\.com\\\/login\)\/i\.test\(location\.href\)\s*\{\s*return true;\s*\}/i
+  );
+});
+
 test('step 2 retries once by reopening the platform login page after non-navigation errors', () => {
   const backgroundSource = readProjectFile('background.js');
 
@@ -103,6 +163,35 @@ test('step 2 retries once by reopening the platform login page after non-navigat
   assert.match(
     backgroundSource,
     /async function recoverStep2PlatformLogin\(error\) \{[\s\S]*Reopening the platform login page and retrying once[\s\S]*reuseOrCreateTab\('signup-page',\s*OFFICIAL_SIGNUP_ENTRY_URL,\s*\{[\s\S]*reloadIfSameUrl:\s*true[\s\S]*\}\);/i
+  );
+});
+
+test('step 2 background fallback only completes once the platform login entry or signup flow is ready', () => {
+  const backgroundSource = readProjectFile('background.js');
+
+  assert.match(
+    backgroundSource,
+    /function isStep2RecoveredAuthPageReady\(pageState = \{\}\) \{/i
+  );
+  assert.match(
+    backgroundSource,
+    /if \(hasVisibleVerificationInput \|\| hasVisibleProfileFormInput\) \{\s*return true;\s*\}/i
+  );
+  assert.match(
+    backgroundSource,
+    /if \(!hasVisibleCredentialInput\) \{\s*return false;\s*\}/i
+  );
+  assert.match(
+    backgroundSource,
+    /if \(\/platform\\\.openai\\\.com\\\/login\/i\.test\(url\)\) \{\s*return true;\s*\}/i
+  );
+  assert.match(
+    backgroundSource,
+    /if \(\/\(\?:auth\|accounts\)\\\.openai\\\.com\\\/\(\?:u\\\/signup\\\/\|create-account\)\/i\.test\(url\)\) \{\s*return true;\s*\}/i
+  );
+  assert.match(
+    backgroundSource,
+    /const authPageReady = isStep2RecoveredAuthPageReady\(pageState\);/i
   );
 });
 
@@ -193,11 +282,36 @@ test('step 3 keeps waiting for completion when the signup auth page enters bfcac
   );
   assert.match(
     backgroundSource,
-    /hasVisibleVerificationInput[\s\S]*hasVisibleProfileFormInput[\s\S]*!\s*pageState\?\.hasVisibleCredentialInput[\s\S]*const payload = \{ recoveredAfterNavigation:\s*true \};[\s\S]*notifyStepComplete\(3,\s*payload\)/i
+    /if \(isStep3RecoveredAuthPageReady\(pageState\)\) \{[\s\S]*const payload = \{ recoveredAfterNavigation:\s*true \};[\s\S]*notifyStepComplete\(3,\s*payload\)/i
   );
   assert.match(
     backgroundSource,
     /pageState\?\.hasVisibleCredentialInput[\s\S]*isExistingAccountLoginPasswordPageUrl\(pageState\?\.url\)[\s\S]*!\s*pageState\?\.hasVisibleSignupRegistrationChoice[\s\S]*const payload = \{[\s\S]*recoveredAfterNavigation:\s*true,[\s\S]*existingAccountLogin:\s*true[\s\S]*\};[\s\S]*Existing-account login password page is already visible after the navigation interrupt[\s\S]*notifyStepComplete\(3,\s*payload\)/i
+  );
+});
+
+test('step 3 background fallback only accepts stable post-credential signup pages', () => {
+  const backgroundSource = readProjectFile('background.js');
+
+  assert.match(
+    backgroundSource,
+    /function isStep3RecoveredAuthPageReady\(pageState = \{\}\) \{/i
+  );
+  assert.match(
+    backgroundSource,
+    /if \(pageState\?\.hasReadyVerificationPage \|\| pageState\?\.hasReadyProfilePage\) \{\s*return true;\s*\}/i
+  );
+  assert.match(
+    backgroundSource,
+    /if \(pageState\?\.hasVisibleCredentialInput\) \{\s*return false;\s*\}/i
+  );
+  assert.match(
+    backgroundSource,
+    /return isCanonicalEmailVerificationUrl\(pageState\?\.url\)\s*\|\|\s*isCanonicalAboutYouUrl\(pageState\?\.url\);/i
+  );
+  assert.doesNotMatch(
+    backgroundSource,
+    /const advancedPastCredentialForm = Boolean\([\s\S]*pageState\?\.url[\s\S]*!\s*pageState\?\.hasVisibleCredentialInput/i
   );
 });
 
@@ -233,7 +347,16 @@ test('step 3 recovery reopens step 2 in signup-entry mode before retrying creden
 
   assert.match(
     backgroundSource,
-    /async function recoverStep3PlatformLogin\(error,\s*options = \{\}\) \{[\s\S]*await executeStep2\(state,\s*\{[\s\S]*preferSignupEntry:\s*true[\s\S]*\}\);/i
+    /async function recoverStep3PlatformLogin\(error,\s*options = \{\}\) \{[\s\S]*Reopening the platform login page[\s\S]*await executeStep2\(state,\s*\{[\s\S]*preferSignupEntry:\s*true[\s\S]*\}\);/i
+  );
+});
+
+test('step 3 timeout recovery also reopens the platform login page in signup-entry mode', () => {
+  const backgroundSource = readProjectFile('background.js');
+
+  assert.match(
+    backgroundSource,
+    /async function recoverStep3OauthTimeout\(\) \{[\s\S]*Reopening the platform login page[\s\S]*await executeStep2\(state,\s*\{[\s\S]*preferSignupEntry:\s*true[\s\S]*\}\);/i
   );
 });
 
@@ -384,6 +507,23 @@ test('step 5 completion is revalidated against the live auth page before the bac
   assert.match(
     backgroundSource,
     /validateStep5CompletionBeforeAcceptingSuccess\(payload = \{\}\) \{[\s\S]*const pageState = await waitForStep5AuthStateToSettle\(\);[\s\S]*pageState\?\.hasUnsupportedEmail[\s\S]*pageState\?\.hasReadyProfilePage[\s\S]*pageState\?\.hasVisibleProfileFormInput/i
+  );
+});
+
+test('step 5 keeps waiting for completion when the profile submit navigation disconnects before the content response returns', () => {
+  const backgroundSource = readProjectFile('background.js');
+
+  assert.match(
+    backgroundSource,
+    /async function executeStep5\(state\) \{[\s\S]*try \{[\s\S]*await sendToContentScript\('signup-page', \{[\s\S]*step:\s*5[\s\S]*\}\);[\s\S]*\} catch \(err\) \{[\s\S]*isMessageChannelClosedError\([\s\S]*isReceivingEndMissingError\([\s\S]*waitForStep5CompletionSignalOrRecoveredAuthState\(\);[\s\S]*throw err;[\s\S]*\}[\s\S]*\}/i
+  );
+  assert.match(
+    backgroundSource,
+    /async function waitForStep5CompletionSignalOrRecoveredAuthState\(\) \{/i
+  );
+  assert.match(
+    backgroundSource,
+    /platform\.openai\.com\/welcome\?step=create[\s\S]*Step 5: Auth page already advanced beyond the profile form after the navigation interrupt[\s\S]*notifyStepComplete\(5,\s*\{[\s\S]*recoveredAfterNavigation:\s*true[\s\S]*\}\)/i
   );
 });
 

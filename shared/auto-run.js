@@ -28,26 +28,44 @@
 
   function decorateAuthFailureWithEmailDomain(errorMessage, currentEmail) {
     const message = getErrorMessage(errorMessage);
-    if (/\(email domain:/i.test(message)) {
-      return message;
-    }
-
     const shouldDecoratePhoneVerification = /phone number is required on the auth page/i.test(message);
     const shouldDecorateMissingNameInput = /could not find name input/i.test(message);
-    if (!shouldDecoratePhoneVerification && !shouldDecorateMissingNameInput) {
+    const shouldDecorateUnsupportedEmail = /email domain is unsupported on the auth page/i.test(message);
+    const alreadyDecoratedWithEmailDomain = /\(email domain:/i.test(message);
+    const alreadyExplainedUnsupportedEmail = /OpenAI rejected this mailbox domain after profile submit/i.test(message);
+
+    if (!shouldDecoratePhoneVerification && !shouldDecorateMissingNameInput && !shouldDecorateUnsupportedEmail) {
       return message;
     }
 
     const emailDomain = extractEmailDomain(currentEmail);
-    if (!emailDomain) {
-      return message;
-    }
 
     if (shouldDecoratePhoneVerification) {
+      if (alreadyDecoratedWithEmailDomain || !emailDomain) {
+        return message;
+      }
       return message.replace(
         /phone number is required on the auth page/i,
         `phone number is required on the auth page (email domain: ${emailDomain})`
       );
+    }
+
+    if (shouldDecorateUnsupportedEmail) {
+      let nextMessage = message;
+      if (!alreadyDecoratedWithEmailDomain && emailDomain) {
+        nextMessage = nextMessage.replace(
+          /email domain is unsupported on the auth page/i,
+          `email domain is unsupported on the auth page (email domain: ${emailDomain})`
+        );
+      }
+      if (!alreadyExplainedUnsupportedEmail) {
+        nextMessage = `${nextMessage} OpenAI rejected this mailbox domain after profile submit. Retry with a new mailbox/domain.`;
+      }
+      return nextMessage;
+    }
+
+    if (alreadyDecoratedWithEmailDomain || !emailDomain) {
+      return message;
     }
 
     return message.replace(
