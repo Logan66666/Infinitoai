@@ -1210,6 +1210,67 @@ function shouldWaitForPostProfileBlockingSettle(outcome = {}) {
   return reason === 'profile-form-hidden-stable' || reason === 'no-rejection-detected';
 }
 
+function findVisibleProfileSubmitButton() {
+  const directSelectors = [
+    'button[type="submit"]',
+    'input[type="submit"]',
+  ];
+
+  for (const selector of directSelectors) {
+    const directMatch = document.querySelector(selector);
+    if (directMatch && isElementVisible(directMatch)) {
+      return directMatch;
+    }
+  }
+
+  const textMatchedButton = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"]')).find((button) => {
+    if (!isElementVisible(button)) {
+      return false;
+    }
+
+    const text = String(button.textContent || button.value || '').trim();
+    return /完成|create|continue|finish|done|agree/i.test(text);
+  });
+
+  return textMatchedButton || null;
+}
+
+async function waitForProfileSubmitButtonOrOutcome(step, timeout = 5000) {
+  const startUrl = location.href;
+  const start = Date.now();
+
+  while (Date.now() - start < timeout) {
+    throwIfStopped();
+
+    const visibleText = getVisiblePageText();
+    if (isUnsupportedEmailBlockingStep(step) && isUnsupportedEmailText(visibleText, location.href)) {
+      throw new Error(getUnsupportedEmailBlockedMessage(step));
+    }
+    if (isBlockingAuthFatalError(visibleText)) {
+      throw new Error('Auth fatal error page detected after profile submit.');
+    }
+
+    const submitButton = findVisibleProfileSubmitButton();
+    if (submitButton) {
+      return {
+        button: submitButton,
+        reason: 'submit-button-visible',
+      };
+    }
+
+    if (location.href !== startUrl || hasStableNextPageAfterProfileSubmit(visibleText)) {
+      return {
+        accepted: true,
+        reason: 'page-advanced-before-submit',
+      };
+    }
+
+    await sleep(250);
+  }
+
+  throw new Error(`Step ${step} blocked: profile submit button did not appear after filling the form. URL: ${location.href}`);
+}
+
 async function waitForPostProfileBlockingSettle(step, startUrl = location.href, timeout = 5000) {
   const start = Date.now();
 
@@ -1909,13 +1970,11 @@ async function step5_fillNameBirthday(payload) {
 
   // Click "完成帐户创建" button
   await sleep(500);
-  const completeBtn = document.querySelector('button[type="submit"]')
-    || await waitForElementByText('button', /完成|create|continue|finish|done|agree/i, 5000).catch(() => null);
-
-  if (completeBtn) {
+  const submitReadiness = await waitForProfileSubmitButtonOrOutcome(5);
+  if (submitReadiness?.button) {
     await humanPause(500, 1300);
     const profileSubmitStartUrl = location.href;
-    simulateClick(completeBtn);
+    simulateClick(submitReadiness.button);
     log('Step 5: Clicked "完成帐户创建"');
     const submitOutcome = await waitForProfileSubmissionOutcome(5);
     if (shouldWaitForPostProfileBlockingSettle(submitOutcome)) {

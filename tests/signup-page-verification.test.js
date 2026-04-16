@@ -4484,3 +4484,104 @@ test('step 5 succeeds when submit redirects to the platform auth callback url', 
   assert.equal(context.__completions.length, 1);
   assert.equal(context.__completions[0].step, 5);
 });
+
+test('step 5 does not report success when the submit button never appears and the page stays on about-you', async () => {
+  let fakeNow = 0;
+  const state = {
+    profileVisible: true,
+  };
+
+  const nameInput = {
+    getBoundingClientRect() {
+      return { width: 240, height: 40 };
+    },
+    dispatchEvent() {},
+    focus() {},
+  };
+
+  const ageInput = {
+    getBoundingClientRect() {
+      return { width: 120, height: 40 };
+    },
+    dispatchEvent() {},
+    focus() {},
+  };
+
+  const context = createContext({
+    href: 'https://auth.openai.com/about-you',
+    bodyText: '你的年龄是多少？ 全名 年龄',
+    waitForElementImpl(selector) {
+      if (selector.includes('input[name="name"]')) {
+        return Promise.resolve(nameInput);
+      }
+      return Promise.reject(new Error(`missing: ${selector}`));
+    },
+    waitForElementByTextImpl() {
+      return Promise.reject(new Error('missing'));
+    },
+    querySelectorImpl(selector) {
+      if (selector === 'input[name="age"]' && state.profileVisible) {
+        return ageInput;
+      }
+      if (selector === 'button[type="submit"]') {
+        return null;
+      }
+      return null;
+    },
+    querySelectorAllImpl(selector) {
+      if (selector === 'input[name="name"]') {
+        return state.profileVisible ? [nameInput] : [];
+      }
+      if (selector === 'input[name="age"]') {
+        return state.profileVisible ? [ageInput] : [];
+      }
+      if (selector === 'input[inputmode="numeric"]') {
+        return state.profileVisible ? [ageInput] : [];
+      }
+      return [];
+    },
+  });
+  context.Date = class extends Date {
+    static now() {
+      return fakeNow;
+    }
+  };
+  context.fillInput = () => {};
+  context.sleep = (ms = 0) => {
+    fakeNow += Math.max(1, Number(ms) || 0);
+    return Promise.resolve();
+  };
+  loadSignupPage(context);
+
+  const listener = context.__listeners[0];
+  assert.ok(listener, 'expected signup-page to register a runtime listener');
+
+  const response = await new Promise((resolve, reject) => {
+    const keepAlive = listener(
+      {
+        type: 'EXECUTE_STEP',
+        step: 5,
+        payload: {
+          firstName: 'Logan',
+          lastName: 'Lee',
+          year: 1995,
+          month: 8,
+          day: 21,
+        },
+      },
+      {},
+      (result) => resolve(result)
+    );
+    assert.equal(keepAlive, true);
+    setTimeout(() => reject(new Error('timeout waiting for response')), 3000);
+  });
+
+  assert.match(response?.error || '', /submit button did not appear|stable next page/i);
+  assert.deepEqual(context.__completions, []);
+  assert.deepEqual(context.__errors, [
+    {
+      step: 5,
+      message: response.error,
+    },
+  ]);
+});
