@@ -161,13 +161,12 @@
   }
 
   function normalizeTmailorDomainState(value = {}) {
+    const blacklist = normalizeDomainList(value.blacklist);
+    const blacklistSet = new Set(blacklist);
     const whitelist = normalizeDomainList([
       ...DEFAULT_TMAILOR_WHITELIST,
       ...(Array.isArray(value.whitelist) ? value.whitelist : []),
-    ]);
-    const whitelistSet = new Set(whitelist);
-
-    const blacklist = normalizeDomainList(value.blacklist).filter((domain) => !whitelistSet.has(domain));
+    ]).filter((domain) => !blacklistSet.has(domain));
     const stats = cloneStats(DEFAULT_TMAILOR_STATS);
 
     for (const [domainKey, entry] of Object.entries(value.stats || {})) {
@@ -330,6 +329,52 @@
     });
   }
 
+  function moveTmailorDomainToBlacklist(state, domain) {
+    const normalizedState = normalizeTmailorDomainState(state);
+    const normalizedDomain = normalizeDomain(domain);
+    if (!normalizedDomain) {
+      return normalizedState;
+    }
+
+    const blacklistSet = new Set(normalizedState.blacklist);
+    blacklistSet.add(normalizedDomain);
+
+    return normalizeTmailorDomainState({
+      whitelist: normalizedState.whitelist.filter((item) => item !== normalizedDomain),
+      blacklist: [...blacklistSet],
+      stats: normalizedState.stats,
+      mode: normalizedState.mode,
+    });
+  }
+
+  function clearTmailorDomainStats(state, domains = [], metric = '') {
+    const normalizedState = normalizeTmailorDomainState(state);
+    const normalizedMetric = String(metric || '').trim().toLowerCase();
+    if (!['success', 'failure'].includes(normalizedMetric)) {
+      return normalizedState;
+    }
+
+    const targetDomains = new Set(normalizeDomainList(domains));
+    if (targetDomains.size === 0) {
+      return normalizedState;
+    }
+
+    const nextStats = cloneStats(normalizedState.stats);
+    for (const domain of targetDomains) {
+      const current = normalizeStatsEntry(nextStats[domain] || {});
+      nextStats[domain] = normalizedMetric === 'success'
+        ? { successCount: 0, failureCount: current.failureCount }
+        : { successCount: current.successCount, failureCount: 0 };
+    }
+
+    return normalizeTmailorDomainState({
+      whitelist: normalizedState.whitelist,
+      blacklist: normalizedState.blacklist,
+      stats: nextStats,
+      mode: normalizedState.mode,
+    });
+  }
+
   function shouldBlacklistTmailorDomainForError(state, domain, errorMessage) {
     const normalizedDomain = normalizeDomain(domain);
     const message = String(errorMessage || '').trim().toLowerCase();
@@ -348,7 +393,9 @@
     const matchesPhoneVerification =
       message.includes('phone number is required on the auth page') ||
       message.includes('phone verification') ||
-      message.includes('auth page still requires phone verification');
+      message.includes('auth page still requires phone verification') ||
+      message.includes('/add-phone') ||
+      (message.includes('verification form stayed visible after submit attempts') && message.includes('add-phone'));
     const matchesFatal = message.includes('auth fatal error page detected after profile submit');
     const matchesMissingNameInput = message.includes('could not find name input');
 
@@ -361,12 +408,14 @@
     DEFAULT_TMAILOR_STATS,
     DEFAULT_TMAILOR_WHITELIST,
     TMAILOR_DOMAIN_MODES,
+    clearTmailorDomainStats,
     cloneStats,
     extractEmailDomain,
     isAllowedTmailorDomain,
     isBlacklistedTmailorDomain,
     isWhitelistedTmailorDomain,
     mergeTmailorDomainStates,
+    moveTmailorDomainToBlacklist,
     normalizeDomain,
     normalizeDomainList,
     normalizeStatsEntry,

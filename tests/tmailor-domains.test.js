@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  clearTmailorDomainStats,
   DEFAULT_TMAILOR_DOMAIN_STATE,
   DEFAULT_TMAILOR_WHITELIST,
   DEFAULT_TMAILOR_DOMAIN_MODE,
@@ -10,6 +11,7 @@ const {
   isBlacklistedTmailorDomain,
   isWhitelistedTmailorDomain,
   mergeTmailorDomainStates,
+  moveTmailorDomainToBlacklist,
   normalizeTmailorDomainState,
   recordTmailorDomainFailure,
   recordTmailorDomainSuccess,
@@ -28,12 +30,21 @@ test('normalizeTmailorDomainState keeps the built-in whitelist and normalizes us
     },
   });
 
-  assert.equal(state.whitelist.includes('mikfarm.com'), true);
+  assert.equal(state.whitelist.includes('mikfarm.com'), false);
   assert.equal(state.whitelist.includes('alpha.com'), true);
   assert.equal(state.blacklist.includes('bad.com'), true);
-  assert.equal(state.blacklist.includes('mikfarm.com'), false);
+  assert.equal(state.blacklist.includes('mikfarm.com'), true);
   assert.equal(state.mode, 'whitelist_only');
   assert.deepEqual(state.stats['alpha.com'], { successCount: 2, failureCount: 1 });
+});
+
+test('normalizeTmailorDomainState lets an explicit blacklist override built-in whitelist entries', () => {
+  const state = normalizeTmailorDomainState({
+    blacklist: ['mikfarm.com'],
+  });
+
+  assert.equal(state.whitelist.includes('mikfarm.com'), false);
+  assert.equal(state.blacklist.includes('mikfarm.com'), true);
 });
 
 test('isAllowedTmailorDomain accepts whitelisted domains and non-blacklisted .com domains', () => {
@@ -67,6 +78,21 @@ test('recordTmailorDomainSuccess increments stats and auto-whitelists successful
   assert.deepEqual(nextState.stats['newgood.com'], { successCount: 1, failureCount: 0 });
 });
 
+test('recordTmailorDomainSuccess promotes a successful com_only domain into the whitelist', () => {
+  const nextState = recordTmailorDomainSuccess(
+    normalizeTmailorDomainState({
+      mode: 'com_only',
+      whitelist: [],
+      blacklist: [],
+    }),
+    'fresh-win.com'
+  );
+
+  assert.equal(isWhitelistedTmailorDomain(nextState, 'fresh-win.com'), true);
+  assert.equal(isBlacklistedTmailorDomain(nextState, 'fresh-win.com'), false);
+  assert.deepEqual(nextState.stats['fresh-win.com'], { successCount: 1, failureCount: 0 });
+});
+
 test('recordTmailorDomainFailure increments stats and can blacklist non-whitelisted domains', () => {
   const nextState = recordTmailorDomainFailure(DEFAULT_TMAILOR_DOMAIN_STATE, 'badfresh.com', {
     blacklist: true,
@@ -74,6 +100,66 @@ test('recordTmailorDomainFailure increments stats and can blacklist non-whitelis
 
   assert.equal(isBlacklistedTmailorDomain(nextState, 'badfresh.com'), true);
   assert.deepEqual(nextState.stats['badfresh.com'], { successCount: 0, failureCount: 1 });
+});
+
+test('clearTmailorDomainStats clears only the requested metric for the provided domains', () => {
+  const nextState = clearTmailorDomainStats(
+    normalizeTmailorDomainState({
+      whitelist: ['alpha.com'],
+      blacklist: ['beta.com'],
+      stats: {
+        'alpha.com': { successCount: 5, failureCount: 2 },
+        'beta.com': { successCount: 4, failureCount: 7 },
+        'gamma.com': { successCount: 3, failureCount: 6 },
+      },
+    }),
+    ['alpha.com', 'beta.com'],
+    'success'
+  );
+
+  assert.deepEqual(nextState.stats['alpha.com'], { successCount: 0, failureCount: 2 });
+  assert.deepEqual(nextState.stats['beta.com'], { successCount: 0, failureCount: 7 });
+  assert.deepEqual(nextState.stats['gamma.com'], { successCount: 3, failureCount: 6 });
+});
+
+test('clearTmailorDomainStats clears only failure counts for matching domains and ignores invalid keys', () => {
+  const original = normalizeTmailorDomainState({
+    whitelist: ['alpha.com'],
+    stats: {
+      'alpha.com': { successCount: 5, failureCount: 2 },
+      'beta.com': { successCount: 4, failureCount: 7 },
+    },
+  });
+
+  const nextState = clearTmailorDomainStats(original, ['alpha.com'], 'failure');
+  const unchanged = clearTmailorDomainStats(original, ['alpha.com'], 'other');
+
+  assert.deepEqual(nextState.stats['alpha.com'], { successCount: 5, failureCount: 0 });
+  assert.deepEqual(nextState.stats['beta.com'], { successCount: 4, failureCount: 7 });
+  assert.deepEqual(unchanged, original);
+});
+
+test('moveTmailorDomainToBlacklist moves a domain from whitelist to blacklist and preserves stats', () => {
+  const nextState = moveTmailorDomainToBlacklist(
+    normalizeTmailorDomainState({
+      whitelist: ['alpha.com'],
+      stats: {
+        'alpha.com': { successCount: 5, failureCount: 2 },
+      },
+    }),
+    'alpha.com'
+  );
+
+  assert.equal(nextState.whitelist.includes('alpha.com'), false);
+  assert.equal(nextState.blacklist.includes('alpha.com'), true);
+  assert.deepEqual(nextState.stats['alpha.com'], { successCount: 5, failureCount: 2 });
+});
+
+test('moveTmailorDomainToBlacklist can manually blacklist a built-in whitelist domain', () => {
+  const nextState = moveTmailorDomainToBlacklist(DEFAULT_TMAILOR_DOMAIN_STATE, 'mikfarm.com');
+
+  assert.equal(nextState.whitelist.includes('mikfarm.com'), false);
+  assert.equal(nextState.blacklist.includes('mikfarm.com'), true);
 });
 
 test('shouldBlacklistTmailorDomainForError blacklists non-whitelisted .com domains for auth-blocking failures', () => {
@@ -89,6 +175,10 @@ test('shouldBlacklistTmailorDomainForError blacklists non-whitelisted .com domai
   );
   assert.equal(
     shouldBlacklistTmailorDomainForError(state, 'unknown-good.com', 'Step 7 blocked: phone number is required on the auth page. Please change node and retry.'),
+    true
+  );
+  assert.equal(
+    shouldBlacklistTmailorDomainForError(state, 'unknown-good.com', 'Step 7 failed: Verification form stayed visible after submit attempts. URL: https://auth.openai.com/add-phone'),
     true
   );
   assert.equal(
