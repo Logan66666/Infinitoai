@@ -88,6 +88,8 @@ const CREDENTIAL_INPUT_SELECTORS = [
 ];
 
 const CREDENTIAL_INPUT_SELECTOR = CREDENTIAL_INPUT_SELECTORS.join(', ');
+const PLATFORM_LOGIN_ENTRY_URL = 'https://platform.openai.com/login';
+const AUTH_LOGIN_HOME_URL = 'https://auth.openai.com/log-in';
 
 async function step2_clickRegister() {
   log('Step 2: Looking for Register/Sign up button...');
@@ -162,8 +164,16 @@ function isPlatformHomeRedirectPage() {
   return /platform\.openai\.com\/home/i.test(location.href);
 }
 
+function isPlatformAuthCallbackPage() {
+  return /platform\.openai\.com\/auth\/callback/i.test(location.href);
+}
+
+function isPlatformSigningInStateText(text = getVisiblePageText()) {
+  return /signing in/i.test(String(text || ''));
+}
+
 async function waitForPlatformEntryStateToSettle(timeout = 8000) {
-  if (!(isPlatformLoginEntryPage() || isPlatformHomeRedirectPage() || isPlatformChatSessionPage())) {
+  if (!(isPlatformLoginEntryPage() || isPlatformHomeRedirectPage() || isPlatformChatSessionPage() || isPlatformAuthCallbackPage() || isAuthReturnHomeIssueText(getVisiblePageText()))) {
     return null;
   }
 
@@ -172,6 +182,12 @@ async function waitForPlatformEntryStateToSettle(timeout = 8000) {
 
   while (Date.now() - start < timeout) {
     throwIfStopped();
+    const visibleText = getVisiblePageText();
+
+    if (await recoverPlatformEntryFromAuthIssueIfNeeded(visibleText)) {
+      sawPlatformRedirect = true;
+      continue;
+    }
 
     if (isPlatformChatSessionPage()) {
       return 'chat';
@@ -181,7 +197,7 @@ async function waitForPlatformEntryStateToSettle(timeout = 8000) {
       return 'login';
     }
 
-    if (isPlatformHomeRedirectPage()) {
+    if (isPlatformHomeRedirectPage() || isPlatformAuthCallbackPage() || isPlatformSigningInStateText(visibleText)) {
       sawPlatformRedirect = true;
     }
 
@@ -196,11 +212,50 @@ async function waitForPlatformEntryStateToSettle(timeout = 8000) {
     return 'login';
   }
 
+  if (isPlatformAuthCallbackPage() || isPlatformSigningInStateText()) {
+    await bouncePlatformEntryViaAuthLogin('Platform entry stayed on the stale signing-in callback longer than expected.');
+    return 'recovered';
+  }
+
   if (sawPlatformRedirect) {
     log('Step 2: Platform entry stayed on the redirect bridge longer than expected. Proceeding with the current page state...', 'warn');
   }
 
   return null;
+}
+
+async function bouncePlatformEntryViaAuthLogin(reason) {
+  log(`Step 2: ${reason} Returning to auth home, then reopening the platform login entry...`, 'warn');
+  location.href = AUTH_LOGIN_HOME_URL;
+  await sleep(500);
+  location.href = PLATFORM_LOGIN_ENTRY_URL;
+  await sleep(500);
+}
+
+async function recoverPlatformEntryFromAuthIssueIfNeeded(visibleText = getVisiblePageText()) {
+  if (!isAuthReturnHomeIssueText(visibleText)) {
+    return false;
+  }
+
+  const returnHomeLink = await waitForElementByText(
+    'a, button, [role="button"], [role="link"]',
+    /返回首页|return home|back to home|home/i,
+    2000
+  ).catch(() => null);
+
+  if (returnHomeLink && isElementVisible(returnHomeLink)) {
+    await humanPause(350, 900);
+    simulateClick(returnHomeLink);
+    await sleep(500);
+  } else {
+    location.href = AUTH_LOGIN_HOME_URL;
+    await sleep(500);
+  }
+
+  log('Step 2: Platform entry hit the auth issue page. Reopening the platform login entry through auth home...', 'warn');
+  location.href = PLATFORM_LOGIN_ENTRY_URL;
+  await sleep(500);
+  return true;
 }
 
 async function logoutFromPlatformChatSessionIfNeeded() {
@@ -520,6 +575,9 @@ async function step3_fillEmailPassword(payload) {
       10000
     );
   } catch {
+    if (await handleAuthReturnHomeRecovery(3)) {
+      throw new Error(getAuthReturnHomeRecoveryErrorMessage(3));
+    }
     throwIfAuthOperationTimedOut(3);
     if (isAuthFatalErrorText(getVisiblePageText())) {
       throw new Error('Auth fatal error page detected before the email input appeared.');
@@ -574,6 +632,9 @@ async function step3_fillEmailPassword(payload) {
 
   const passwordInput = passwordlessChoice?.passwordInput || null;
   if (!passwordInput) {
+    if (await handleAuthReturnHomeRecovery(3)) {
+      throw new Error(getAuthReturnHomeRecoveryErrorMessage(3));
+    }
     throwIfAuthOperationTimedOut(3);
     if (isAuthFatalErrorText(getVisiblePageText())) {
       throw new Error('Auth fatal error page detected before the password input appeared.');
@@ -663,7 +724,7 @@ async function fillVerificationCode(step, payload) {
         await sleep(100);
       }
       await sleep(400);
-      return await submitVerificationCodeAndWait(step);
+      return await submitVerificationCodeAndWait(step, singleInputs[0] || null);
     }
     const visibleText = getVisiblePageText();
     if (step === 7 && /email-verification/i.test(location.href) && isVerificationRetryStateText(visibleText)) {
@@ -681,29 +742,108 @@ async function fillVerificationCode(step, payload) {
   fillInput(codeInput, code);
   log(`Step ${step}: Code filled`);
 
-  return await submitVerificationCodeAndWait(step);
+  return await submitVerificationCodeAndWait(step, codeInput);
 }
 
-async function submitVerificationCodeAndWait(step) {
+async function submitVerificationCodeAndWait(step, submitInput = null) {
   const hadRejectedStateBeforeSubmit = isVerificationCodeRejectedText(getVisiblePageText());
+  let submitAttempted = await triggerVerificationSubmit(step, submitInput);
+  let outcome = await waitForVerificationSubmissionOutcome(step, hadRejectedStateBeforeSubmit);
+
+  if (outcome.retrySubmit) {
+    log(`Step ${step}: Verification form is still visible after waiting. Retrying submit once...`, 'warn');
+    submitAttempted = await triggerVerificationSubmit(step, submitInput, { retry: true }) || submitAttempted;
+    outcome = await waitForVerificationSubmissionOutcome(step, hadRejectedStateBeforeSubmit);
+  }
+
+  if (step === 4 && outcome.retrySubmit && submitAttempted) {
+    log(`Step ${step}: Verification form is still visible after submit retries. Waiting briefly for delayed acceptance...`, 'warn');
+    outcome = await waitForVerificationSubmissionOutcome(step, hadRejectedStateBeforeSubmit, 3000);
+  }
+
+  if (outcome.retryInbox) {
+    log(`Step ${step}: Page rejected the code. Returning to inbox refresh.`, 'warn');
+    return outcome;
+  }
+  if (outcome.retrySubmit || (submitAttempted && hasActiveVerificationInput())) {
+    throw new Error(`Verification form stayed visible after submit attempts. URL: ${location.href}`);
+  }
+
+  reportComplete(step);
+  return outcome;
+}
+
+async function triggerVerificationSubmit(step, submitInput = null, options = {}) {
+  const { retry = false } = options;
   await sleep(500);
   const submitBtn = document.querySelector('button[type="submit"]')
     || await waitForElementByText('button', /verify|confirm|submit|continue|确认|验证/i, 5000).catch(() => null);
 
   if (submitBtn) {
-    await humanPause(450, 1200);
-    simulateClick(submitBtn);
-    log(`Step ${step}: Verification submitted`);
+    const readiness = await waitForVerificationSubmitReady(submitBtn);
+    if (readiness === 'enabled') {
+      await humanPause(450, 1200);
+      simulateClick(submitBtn);
+      log(`Step ${step}: Verification submitted${retry ? ' again' : ''}`);
+      return true;
+    }
+    if (readiness === 'advanced') {
+      return true;
+    }
   }
 
-  const outcome = await waitForVerificationSubmissionOutcome(step, hadRejectedStateBeforeSubmit);
-  if (outcome.retryInbox) {
-    log(`Step ${step}: Page rejected the code. Returning to inbox refresh.`, 'warn');
-    return outcome;
+  if (submitVerificationCodeWithFallback(submitInput)) {
+    log(
+      `Step ${step}: Verification button did not become clickable. Submitted the verification form via a fallback Enter key sequence${retry ? ' on retry' : ''}.`,
+      'warn'
+    );
+    return true;
   }
 
-  reportComplete(step);
-  return outcome;
+  return false;
+}
+
+async function waitForVerificationSubmitReady(button, timeout = 5000) {
+  const start = Date.now();
+
+  while (Date.now() - start < timeout) {
+    throwIfStopped();
+
+    if (isButtonEnabled(button)) {
+      return 'enabled';
+    }
+    if (!hasActiveVerificationInput()) {
+      return 'advanced';
+    }
+
+    await sleep(150);
+  }
+
+  return 'timeout';
+}
+
+function submitVerificationCodeWithFallback(codeInput) {
+  const form = codeInput?.form || codeInput?.closest?.('form') || null;
+
+  if (form?.requestSubmit) {
+    form.requestSubmit();
+    return true;
+  }
+
+  if (form?.submit) {
+    form.submit();
+    return true;
+  }
+
+  if (!codeInput?.dispatchEvent) {
+    return false;
+  }
+
+  codeInput.focus?.();
+  codeInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
+  codeInput.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
+  codeInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
+  return true;
 }
 
 async function waitForVerificationSubmissionOutcome(step, hadRejectedStateBeforeSubmit = false, timeout = 5000) {
@@ -714,7 +854,10 @@ async function waitForVerificationSubmissionOutcome(step, hadRejectedStateBefore
     throwIfStopped();
 
     const visibleText = getVisiblePageText();
-    const hasVisibleInput = hasVisibleVerificationInput();
+    const hasVisibleProfileInput = hasVisibleProfileFormInput();
+    const onReadyProfilePage = hasReadyProfilePage(visibleText);
+    const hasVisibleVerificationInputNow = hasVisibleVerificationInput();
+    const hasVisibleInput = hasActiveVerificationInput();
     if (isAuthFatalErrorText(visibleText)) {
       throw new Error('Auth fatal error page detected after verification submit.');
     }
@@ -734,20 +877,34 @@ async function waitForVerificationSubmissionOutcome(step, hadRejectedStateBefore
       throw new Error('Verification page entered retry state after submitting the verification code. Restart this run.');
     }
 
-    if (location.href !== startUrl || !hasVisibleInput) {
+    if (location.href !== startUrl || onReadyProfilePage) {
       return {
         accepted: true,
-        reason: 'page-advanced',
+        reason: onReadyProfilePage ? 'profile-form-visible' : 'page-advanced',
+      };
+    }
+
+    if (!hasVisibleVerificationInputNow && !hasVisibleProfileInput && !hasVerificationContextText(visibleText)) {
+      return {
+        accepted: true,
+        reason: 'verification-form-hidden',
       };
     }
 
     await sleep(250);
   }
 
-  if (hadRejectedStateBeforeSubmit && hasVisibleVerificationInput()) {
+  if (hadRejectedStateBeforeSubmit && hasActiveVerificationInput()) {
     return {
       retryInbox: true,
       reason: 'verification-still-blocked',
+    };
+  }
+
+  if (hasActiveVerificationInput() || (hasVisibleProfileFormInput() && !hasReadyProfilePage(getVisiblePageText()))) {
+    return {
+      retrySubmit: true,
+      reason: 'verification-still-visible',
     };
   }
 
@@ -765,6 +922,50 @@ function getVisiblePageText() {
   return `${bodyText} ${ariaText}`.trim();
 }
 
+function hasVerificationContextText(text = getVisiblePageText()) {
+  return /check your inbox|verify your email|verification code|enter the 6-digit code|6-digit code|resend\s*email|重新发送电子邮件|验证码|电子邮件|邮箱|邮件|收件箱/i.test(String(text || ''));
+}
+
+function hasProfileContextText(text = getVisiblePageText()) {
+  return /what is your age|你的年龄是多少|create your account|complete account creation|完成帐户创建|完成账户创建|full name|全名|年龄|birthday|出生|privacy policy|隐私政策|terms|条款/i.test(String(text || ''));
+}
+
+function hasReadyVerificationPage(text = getVisiblePageText()) {
+  return hasVisibleVerificationInput()
+    && hasVerificationContextText(text)
+    && !hasProfileContextText(text);
+}
+
+function hasReadyProfilePage(text = getVisiblePageText()) {
+  return hasVisibleProfileFormInput()
+    && hasProfileContextText(text)
+    && !hasVerificationContextText(text);
+}
+
+function hasVisibleOauthConsentContinueButton(text = getVisiblePageText()) {
+  const selectorMatch = Array.from(
+    document.querySelectorAll('button[type="submit"][data-dd-action-name="Continue"], button[type="submit"]._primary_3rdp0_107')
+  ).some(isElementVisible);
+  if (selectorMatch) {
+    return true;
+  }
+
+  if (!/使用\s*ChatGPT\s*登录到|log\s*in\s*to|authorize|consent|codex/i.test(String(text || ''))) {
+    return false;
+  }
+
+  return Array.from(document.querySelectorAll('button, [role="button"]')).some(
+    (button) => isElementVisible(button) && /继续|Continue/i.test(String(button.textContent || '').trim())
+  );
+}
+
+function hasStableNextPageAfterProfileSubmit(text = getVisiblePageText()) {
+  return hasVisibleOauthConsentContinueButton(text)
+    || Boolean(getPageOauthUrl())
+    || hasVisibleCredentialInput()
+    || hasReadyVerificationPage(text);
+}
+
 function getAuthPageState() {
   const visibleText = getVisiblePageText();
   return {
@@ -775,6 +976,8 @@ function getAuthPageState() {
     hasVisibleCredentialInput: hasVisibleCredentialInput(),
     hasVisibleVerificationInput: hasVisibleVerificationInput(),
     hasVisibleProfileFormInput: hasVisibleProfileFormInput(),
+    hasReadyVerificationPage: hasReadyVerificationPage(visibleText),
+    hasReadyProfilePage: hasReadyProfilePage(visibleText),
     url: location.href,
   };
 }
@@ -798,6 +1001,10 @@ function hasVisibleVerificationInput() {
   return selectors.some((selector) => Array.from(document.querySelectorAll(selector)).some(isElementVisible));
 }
 
+function hasActiveVerificationInput() {
+  return hasVisibleVerificationInput() && !hasVisibleProfileFormInput();
+}
+
 function hasVisibleProfileFormInput() {
   const selectors = [
     'input[name="name"]',
@@ -814,11 +1021,14 @@ function hasVisibleProfileFormInput() {
 async function waitForProfileSubmissionOutcome(step, timeout = 7000) {
   const startUrl = location.href;
   const start = Date.now();
+  let nonProfileStateSince = 0;
 
   while (Date.now() - start < timeout) {
     throwIfStopped();
 
     const visibleText = getVisiblePageText();
+    const hasRawProfileInput = hasVisibleProfileFormInput();
+    const onReadyProfilePage = hasReadyProfilePage(visibleText);
     if (isUnsupportedEmailBlockingStep(step) && isUnsupportedEmailText(visibleText)) {
       throw new Error(getUnsupportedEmailBlockedMessage(step));
     }
@@ -826,20 +1036,38 @@ async function waitForProfileSubmissionOutcome(step, timeout = 7000) {
       throw new Error('Auth fatal error page detected after profile submit.');
     }
 
-    if (location.href !== startUrl || !hasVisibleProfileFormInput()) {
+    if (location.href !== startUrl) {
       return {
         accepted: true,
-        reason: 'page-advanced',
+        reason: 'url-changed',
       };
+    }
+
+    if (hasStableNextPageAfterProfileSubmit(visibleText)) {
+      return {
+        accepted: true,
+        reason: 'stable-next-page-signal',
+      };
+    }
+
+    if (!hasRawProfileInput && !hasProfileContextText(visibleText)) {
+      if (!nonProfileStateSince) {
+        nonProfileStateSince = Date.now();
+      }
+      if (Date.now() - nonProfileStateSince >= 1500) {
+        return {
+          accepted: true,
+          reason: 'profile-form-hidden-stable',
+        };
+      }
+    } else if (onReadyProfilePage || hasRawProfileInput || hasProfileContextText(visibleText)) {
+      nonProfileStateSince = 0;
     }
 
     await sleep(250);
   }
 
-  return {
-    accepted: true,
-    reason: 'no-blocker-detected',
-  };
+  throw new Error(`Step ${step} blocked: profile submit did not reach a stable next page. URL: ${location.href}`);
 }
 
 // ============================================================
@@ -1009,6 +1237,9 @@ async function waitForStep3CredentialSubmissionOutcome(startUrl, timeout = 8000)
     throwIfStopped();
 
     const visibleText = getVisiblePageText();
+    if (await handleAuthReturnHomeRecovery(3, visibleText)) {
+      throw new Error(getAuthReturnHomeRecoveryErrorMessage(3));
+    }
     throwIfAuthOperationTimedOut(3, visibleText);
     if (isAuthFatalErrorText(visibleText)) {
       throw new Error('Auth fatal error page detected after step 3 password submit.');
@@ -1097,6 +1328,10 @@ async function waitForLoginPasswordField(timeout = 25000) {
   while (Date.now() - start < timeout) {
     throwIfStopped();
 
+    if (await handleAuthReturnHomeRecovery(6)) {
+      throw new Error(getAuthReturnHomeRecoveryErrorMessage(6));
+    }
+
     const passwordInput = findVisiblePasswordInput();
     if (passwordInput) {
       return passwordInput;
@@ -1117,6 +1352,9 @@ async function waitForLoginSubmissionOutcome(timeout = 12000) {
     throwIfStopped();
 
     const visibleText = getVisiblePageText();
+    if (await handleAuthReturnHomeRecovery(6, visibleText)) {
+      throw new Error(getAuthReturnHomeRecoveryErrorMessage(6));
+    }
     if (isAuthFatalErrorText(visibleText)) {
       log(
         `Step 6: Fatal auth state after login submit. URL: ${location.href}; Visible text snapshot: ${summarizeVisibleTextForLog(visibleText) || '(empty)'}`,
@@ -1157,6 +1395,50 @@ function isLoginCredentialErrorText(text) {
 
 function getLoginCredentialErrorMessage() {
   return 'Incorrect email address or password.';
+}
+
+function isAuthReturnHomeIssueText(text) {
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!normalized) {
+    return false;
+  }
+
+  if (/we ran into an issue while authenticating you/i.test(normalized)) {
+    return true;
+  }
+
+  return /糟糕[！!]?/i.test(normalized)
+    && /authenticating you|help\.openai\.com/i.test(normalized)
+    && /返回首页|return home|back to home|home/i.test(normalized);
+}
+
+function getAuthReturnHomeRecoveryErrorMessage(step) {
+  if (step === 6) {
+    return 'Step 6 recoverable: auth issue page offered a "return home" recovery link. Refresh the VPS OAuth link and retry with the same email and password.';
+  }
+  return 'Step 3 blocked: auth issue page offered a "return home" recovery link. Reopen the platform login page and retry with the same email and password.';
+}
+
+async function handleAuthReturnHomeRecovery(step, visibleText = getVisiblePageText()) {
+  if (!isAuthReturnHomeIssueText(visibleText)) {
+    return false;
+  }
+
+  const returnHomeLink = await waitForElementByText(
+    'a, button, [role="button"], [role="link"]',
+    /返回首页|return home|back to home|home/i,
+    2000
+  ).catch(() => null);
+
+  if (!returnHomeLink || !isElementVisible(returnHomeLink)) {
+    return false;
+  }
+
+  await humanPause(350, 900);
+  simulateClick(returnHomeLink);
+  log(`Step ${step}: Auth issue page detected. Clicked "返回首页" to recover the login flow.`, 'warn');
+  await sleep(500);
+  return true;
 }
 
 function isElementVisible(el) {
@@ -1224,7 +1506,7 @@ async function waitForButtonEnabled(button, timeout = 8000) {
 function isButtonEnabled(button) {
   return Boolean(button)
     && !button.disabled
-    && button.getAttribute('aria-disabled') !== 'true';
+    && button.getAttribute?.('aria-disabled') !== 'true';
 }
 
 function getSerializableRect(el) {
@@ -1269,7 +1551,7 @@ async function step5_fillNameBirthday(payload) {
   let nameInput = null;
   try {
     nameInput = await waitForElement(
-      'input[name="name"], input[placeholder*="全名"], input[autocomplete="name"]',
+      'input[name="name"], input[name="full_name"], input[placeholder*="全名"], input[placeholder*="name" i], input[autocomplete="name"], input[id*="name" i]:not([type="hidden"])',
       10000
     );
   } catch {

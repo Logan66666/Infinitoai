@@ -17,7 +17,10 @@ const {
   buildMailPollRecoveryPlan,
   isMessageChannelClosedError,
   isReceivingEndMissingError,
+  shouldRetryStep1WithFreshVpsPanel,
+  shouldRetryStep3WithPlatformLoginRefresh,
   shouldRetryStep3WithFreshOauth,
+  shouldRetryStep6WithFreshOauth,
   shouldRetryStep8WithFreshOauth,
   shouldSkipStepResultLog,
 } = RuntimeErrors;
@@ -274,6 +277,7 @@ const DEFAULT_STATE = {
     status: 'idle',
     message: 'TMailor API not checked yet.',
   },
+  emailLease: null,
   autoRunPauseWatchdog: null,
   mailProviderUsage: {
     '163': [],
@@ -2043,7 +2047,12 @@ async function executeStep(step) {
  */
 async function executeStepAndWait(step, delayAfter = 2000, recoveryState = false) {
   throwIfStopped();
+  const recoveredStep1VpsPanel = Boolean(recoveryState && recoveryState !== true && recoveryState.step1VpsPanel);
+  const recoveredStep2PlatformLogin = Boolean(recoveryState && recoveryState !== true && recoveryState.step2PlatformLogin);
+  const recoveredStep4CredentialStall = Boolean(recoveryState && recoveryState !== true && recoveryState.step4CredentialStall);
+  const recoveredStep3PlatformLoginRefreshCount = Math.max(0, Number.parseInt(String(recoveryState?.step3PlatformLoginRefreshCount ?? 0), 10) || 0);
   const recoveredStep3Timeout = recoveryState === true || Boolean(recoveryState?.step3Timeout);
+  const recoveredStep6PlatformLogin = Boolean(recoveryState && recoveryState !== true && recoveryState.step6PlatformLogin);
   const recoveredStep8UnexpectedRedirect = Boolean(recoveryState && recoveryState !== true && recoveryState.step8UnexpectedRedirect);
   const completionPromise = waitForStepComplete(step, 120000);
   const executionPromise = (async () => {
@@ -2059,9 +2068,35 @@ async function executeStepAndWait(step, delayAfter = 2000, recoveryState = false
       await executionPromise;
     }
   } catch (err) {
+    if (step === 1 && !recoveredStep1VpsPanel && shouldRetryStep1WithFreshVpsPanel(err)) {
+      await recoverStep1VpsPanel(err);
+      return await executeStepAndWait(step, delayAfter, { step1VpsPanel: true });
+    }
+    if (step === 2 && !recoveredStep2PlatformLogin && !isStopError(err)) {
+      await recoverStep2PlatformLogin(err);
+      return await executeStepAndWait(step, delayAfter, { step2PlatformLogin: true });
+    }
+    if (step === 4 && !recoveredStep4CredentialStall && shouldRetryStep4WithCurrentTmailorLease(err)) {
+      await replayStep2AndStep3WithCurrentTmailorLease(err);
+      return await executeStepAndWait(step, delayAfter, { step4CredentialStall: true });
+    }
+    if (step === 3 && recoveredStep3PlatformLoginRefreshCount < 3 && shouldRetryStep3WithPlatformLoginRefresh(err)) {
+      await recoverStep3PlatformLogin(err, {
+        attempt: recoveredStep3PlatformLoginRefreshCount + 1,
+        maxAttempts: 3,
+        reason: 'platform-login-refresh',
+      });
+      return await executeStepAndWait(step, delayAfter, {
+        step3PlatformLoginRefreshCount: recoveredStep3PlatformLoginRefreshCount + 1,
+      });
+    }
     if (step === 3 && !recoveredStep3Timeout && shouldRetryStep3WithFreshOauth(err)) {
-      await recoverStep3OauthTimeout();
+      await recoverStep3PlatformLogin(err);
       return await executeStepAndWait(step, delayAfter, { step3Timeout: true });
+    }
+    if (step === 6 && !recoveredStep6PlatformLogin && shouldRetryStep6WithFreshOauth(err)) {
+      await recoverStep6PlatformLogin(err);
+      return await executeStepAndWait(step, delayAfter, { step6PlatformLogin: true });
     }
     if (step === 8 && !recoveredStep8UnexpectedRedirect && shouldRetryStep8WithFreshOauth(err)) {
       await replaySteps6Through8WithCurrentAccount(
@@ -2075,6 +2110,74 @@ async function executeStepAndWait(step, delayAfter = 2000, recoveryState = false
   if (delayAfter > 0) {
     await sleepWithStop(delayAfter + Math.floor(Math.random() * 1200));
   }
+}
+
+async function recoverStep1VpsPanel(error) {
+  const state = await getState();
+  const message = error?.message || String(error || 'unknown step 1 error');
+  await addLog(
+    `Step 1: ${message} Reopening the VPS panel and retrying once...`,
+    'warn'
+  );
+
+  await reuseOrCreateTab('vps-panel', state.vpsUrl, {
+    inject: ['shared/flow-recovery.js', 'content/utils.js', 'content/vps-panel.js'],
+    reloadIfSameUrl: true,
+  });
+}
+
+async function recoverStep2PlatformLogin(error) {
+  const message = error?.message || String(error || 'unknown step 2 error');
+  await addLog(
+    `Step 2: ${message} Reopening the platform login page and retrying once...`,
+    'warn'
+  );
+  await reuseOrCreateTab('signup-page', OFFICIAL_SIGNUP_ENTRY_URL, {
+    reuseActiveTabOnCreate: true,
+    reloadIfSameUrl: true,
+  });
+}
+
+function shouldRetryStep4WithCurrentTmailorLease(error) {
+  const message = typeof error === 'string' ? error : error?.message || '';
+  return /step 4 blocked: signup page never advanced past the credential form/i.test(message);
+}
+
+async function replayStep2AndStep3WithCurrentTmailorLease(error) {
+  const state = await getState();
+  const lease = getActiveTmailorEmailLease(state);
+  if (!lease) {
+    throw error;
+  }
+
+  const nextRecoveryAttempts = {
+    ...lease.recoveryAttempts,
+    step4: (Number.parseInt(String(lease.recoveryAttempts?.step4 ?? 0), 10) || 0) + 1,
+  };
+  await setTmailorEmailLease({ recoveryAttempts: nextRecoveryAttempts });
+  await addLog(
+    `Step 4: ${error?.message || String(error || 'unknown error')} Reopening the platform login page and replaying steps 2-3 once with leased TMailor mailbox ${lease.email}...`,
+    'warn'
+  );
+
+  await setEmailState(lease.email);
+  if (lease.password) {
+    await setPasswordState(lease.password);
+  }
+
+  await reuseOrCreateTab('signup-page', OFFICIAL_SIGNUP_ENTRY_URL, {
+    reuseActiveTabOnCreate: true,
+    reloadIfSameUrl: true,
+  });
+  await executeStepAndWait(2, 2000);
+
+  const refreshedState = await getState();
+  const refreshedLease = getActiveTmailorEmailLease(refreshedState) || lease;
+  await setEmailState(refreshedLease.email);
+  if (refreshedLease.password) {
+    await setPasswordState(refreshedLease.password);
+  }
+  await executeStepAndWait(3, getStepDelayAfter(3));
 }
 
 async function fetchDuckEmail(options = {}) {
@@ -2134,11 +2237,68 @@ function isTmailorEmailAllowed(state, email) {
   return isAllowedTmailorDomain(state?.tmailorDomainState, extractEmailDomain(email));
 }
 
+function buildEmailLease(previousLease = null, updates = {}) {
+  const previousRecoveryAttempts = previousLease?.recoveryAttempts && typeof previousLease.recoveryAttempts === 'object'
+    ? previousLease.recoveryAttempts
+    : {};
+
+  return {
+    source: 'tmailor',
+    status: 'active',
+    email: '',
+    password: '',
+    accessToken: '',
+    invalidReason: '',
+    createdAt: Number.isFinite(previousLease?.createdAt) ? previousLease.createdAt : Date.now(),
+    recoveryAttempts: {
+      step2: 0,
+      step3: 0,
+      step4: 0,
+      ...previousRecoveryAttempts,
+      ...(updates?.recoveryAttempts && typeof updates.recoveryAttempts === 'object' ? updates.recoveryAttempts : {}),
+    },
+    ...(previousLease && typeof previousLease === 'object' ? previousLease : {}),
+    ...(updates && typeof updates === 'object' ? updates : {}),
+  };
+}
+
+function getActiveTmailorEmailLease(state) {
+  if (!isTmailorSource(state)) {
+    return null;
+  }
+
+  const lease = state?.emailLease;
+  if (!lease || typeof lease !== 'object') {
+    return null;
+  }
+  if (lease.source !== 'tmailor' || lease.status !== 'active') {
+    return null;
+  }
+  if (!String(lease.email || '').trim()) {
+    return null;
+  }
+
+  return lease;
+}
+
+async function setTmailorEmailLease(updates = {}) {
+  const state = await getState();
+  const nextLease = buildEmailLease(state.emailLease, updates);
+  await setState({ emailLease: nextLease });
+  return nextLease;
+}
+
 async function markTmailorOutcomePending(email) {
   await setState({
     email,
     tmailorAccessToken: '',
     tmailorOutcomeRecorded: false,
+  });
+  await setTmailorEmailLease({
+    email,
+    accessToken: '',
+    status: 'active',
+    invalidReason: '',
   });
   broadcastDataUpdate({ email });
 }
@@ -2230,6 +2390,12 @@ async function fetchTmailorEmail(options = {}) {
         });
         markAutoRunCurrentSuccessMode('api');
         await setTmailorMailboxState(result.email, result.accessToken);
+        await setTmailorEmailLease({
+          email: result.email,
+          accessToken: result.accessToken,
+          status: 'active',
+          invalidReason: '',
+        });
         await addLog(`TMailor API: Mailbox ready ${result.email} (token saved for API inbox polling).`, 'ok');
         return result.email;
       } catch (err) {
@@ -3074,7 +3240,10 @@ async function waitForStep2CompletionSignalOrAuthPageReady() {
 
 async function executeStep3(state) {
   const emailSource = getCurrentEmailSource(state);
-  let email = state.email;
+  const activeTmailorLease = getActiveTmailorEmailLease(state);
+  let email = emailSource === 'tmailor' && activeTmailorLease?.email
+    ? activeTmailorLease.email
+    : state.email;
 
   if (emailSource === '33mail') {
     const currentDomain = get33MailDomainForProvider(state.mailDomainSettings, state.mailProvider || '163');
@@ -3097,6 +3266,19 @@ async function executeStep3(state) {
   const password = state.customPassword || state.password || generatePassword();
   await setEmailState(email);
   await setPasswordState(password);
+  if (emailSource === 'tmailor') {
+    await setTmailorEmailLease({
+      email,
+      password,
+      accessToken: state.tmailorAccessToken || activeTmailorLease?.accessToken || '',
+      status: 'active',
+      invalidReason: '',
+      recoveryAttempts: {
+        ...(activeTmailorLease?.recoveryAttempts || {}),
+        step3: (Number.parseInt(String(activeTmailorLease?.recoveryAttempts?.step3 ?? 0), 10) || 0) + 1,
+      },
+    });
+  }
 
   // Save account record
   const accounts = state.accounts || [];
@@ -3145,11 +3327,20 @@ async function waitForStep3CompletionSignalOrRecoveredAuthState() {
     }
 
     const pageState = await getSignupAuthPageState();
+    const advancedPastCredentialForm = Boolean(
+      pageState?.hasVisibleVerificationInput
+      || pageState?.hasVisibleProfileFormInput
+      || (
+        pageState?.url
+        && !pageState?.hasVisibleCredentialInput
+        && !isExistingAccountLoginPasswordPageUrl(pageState?.url)
+      )
+    );
 
-    if (pageState?.hasVisibleVerificationInput || pageState?.hasVisibleProfileFormInput) {
+    if (advancedPastCredentialForm || pageState?.hasReadyVerificationPage || pageState?.hasReadyProfilePage) {
       const payload = { recoveredAfterNavigation: true };
       await addLog(
-        'Step 3: Auth page is already on verification/profile after the navigation interrupt. Completing the step from the background fallback.',
+        'Step 3: Auth page already advanced beyond the credential form after the navigation interrupt. Completing the step from the background fallback.',
         'warn'
       );
       await setStepStatus(3, 'completed');
@@ -3436,6 +3627,8 @@ async function getSignupAuthPageState() {
       hasVisibleCredentialInput: false,
       hasVisibleVerificationInput: false,
       hasVisibleProfileFormInput: false,
+      hasReadyVerificationPage: false,
+      hasReadyProfilePage: false,
     };
   } catch {
     return {
@@ -3445,6 +3638,8 @@ async function getSignupAuthPageState() {
       hasVisibleCredentialInput: false,
       hasVisibleVerificationInput: false,
       hasVisibleProfileFormInput: false,
+      hasReadyVerificationPage: false,
+      hasReadyProfilePage: false,
     };
   }
 }
@@ -3453,6 +3648,7 @@ async function ensureSignupPageReadyForVerification(state, step = 4) {
   const start = Date.now();
   const timeoutMs = 10000;
   let refreshedOauthAfterTimeout = false;
+  let hasLoggedAmbiguousPageWait = false;
   let lastPageState = null;
 
   while (Date.now() - start < timeoutMs) {
@@ -3483,7 +3679,7 @@ async function ensureSignupPageReadyForVerification(state, step = 4) {
       throw new Error(`Step ${step} blocked: auth page requires phone verification before the verification email step.`);
     }
 
-    if (pageState?.hasVisibleVerificationInput || pageState?.hasVisibleProfileFormInput) {
+    if (pageState?.hasReadyVerificationPage || pageState?.hasReadyProfilePage) {
       return state;
     }
 
@@ -3493,11 +3689,23 @@ async function ensureSignupPageReadyForVerification(state, step = 4) {
       continue;
     }
 
+    if (pageState?.hasVisibleVerificationInput || pageState?.hasVisibleProfileFormInput) {
+      if (!hasLoggedAmbiguousPageWait) {
+        hasLoggedAmbiguousPageWait = true;
+        await addLog(
+          `Step ${step}: Auth page shows verification/profile inputs, but the surrounding page copy is not stable yet. Waiting for stronger page signals before checking the inbox...`,
+          'info'
+        );
+      }
+      await sleepWithStop(1000);
+      continue;
+    }
+
     return state;
   }
 
   await addLog(
-    `Step ${step}: Final signup auth state before inbox polling timed out. URL=${lastPageState?.url || 'unknown'}; credential=${Boolean(lastPageState?.hasVisibleCredentialInput)}; verification=${Boolean(lastPageState?.hasVisibleVerificationInput)}; profile=${Boolean(lastPageState?.hasVisibleProfileFormInput)}; fatal=${Boolean(lastPageState?.hasFatalError)}; phone=${Boolean(lastPageState?.requiresPhoneVerification)}.`,
+    `Step ${step}: Final signup auth state before inbox polling timed out. URL=${lastPageState?.url || 'unknown'}; credential=${Boolean(lastPageState?.hasVisibleCredentialInput)}; verification=${Boolean(lastPageState?.hasVisibleVerificationInput)}; profile=${Boolean(lastPageState?.hasVisibleProfileFormInput)}; readyVerification=${Boolean(lastPageState?.hasReadyVerificationPage)}; readyProfile=${Boolean(lastPageState?.hasReadyProfilePage)}; fatal=${Boolean(lastPageState?.hasFatalError)}; phone=${Boolean(lastPageState?.requiresPhoneVerification)}.`,
     'warn'
   );
   throw new Error(`Step ${step} blocked: signup page never advanced past the credential form, so the verification email was probably not sent.`);
@@ -3632,6 +3840,66 @@ async function executeStep4(state) {
   });
 }
 
+async function ensureSignupPageReadyForProfile(state, step = 5) {
+  const start = Date.now();
+  const timeoutMs = 15000;
+  let hasLoggedVerificationWait = false;
+  let hasLoggedAmbiguousProfileWait = false;
+  let lastPageState = null;
+
+  while (Date.now() - start < timeoutMs) {
+    const pageState = await getSignupAuthPageState();
+    lastPageState = pageState;
+
+    if (pageState?.hasFatalError) {
+      throw new Error(`Step ${step} blocked: auth page showed a fatal error before profile completion.`);
+    }
+
+    if (pageState?.requiresPhoneVerification) {
+      throw new Error(`Step ${step} blocked: auth page requires phone verification before profile completion.`);
+    }
+
+    if (pageState?.hasReadyProfilePage) {
+      return state;
+    }
+
+    if (pageState?.hasReadyVerificationPage || pageState?.hasVisibleVerificationInput) {
+      if (!hasLoggedVerificationWait) {
+        hasLoggedVerificationWait = true;
+        await addLog(
+          `Step ${step}: Verification page is still settling after step 4. Waiting for the profile form before filling name data...`,
+          'info'
+        );
+      }
+      await sleepWithStop(1000);
+      continue;
+    }
+
+    if (pageState?.hasVisibleProfileFormInput) {
+      if (!hasLoggedAmbiguousProfileWait) {
+        hasLoggedAmbiguousProfileWait = true;
+        await addLog(
+          `Step ${step}: Profile inputs are present, but the page copy still looks transitional. Waiting for the final profile page before filling name data...`,
+          'info'
+        );
+      }
+      await sleepWithStop(1000);
+      continue;
+    }
+
+    return state;
+  }
+
+  if (lastPageState?.hasReadyVerificationPage || lastPageState?.hasVisibleVerificationInput) {
+    await addLog(
+      `Step ${step}: Verification page was still visible after waiting ${Math.round(timeoutMs / 1000)}s. Falling back to the existing profile-form detection flow...`,
+      'warn'
+    );
+  }
+
+  return state;
+}
+
 // ============================================================
 // Step 5: Fill Name & Birthday (via signup-page.js)
 // ============================================================
@@ -3649,6 +3917,7 @@ async function executeStep5(state) {
 
   const { firstName, lastName } = generateRandomName();
   const { year, month, day } = generateRandomBirthday();
+  await ensureSignupPageReadyForProfile(state, 5);
 
   await addLog(`Step 5: Generated name: ${firstName} ${lastName}, Birthday: ${year}-${month}-${day}`);
 
@@ -3690,6 +3959,46 @@ async function recoverStep3OauthTimeout() {
   const waitForSignupPage = waitForStepComplete(2, 120000);
   await executeStep2(state);
   await waitForSignupPage;
+}
+
+async function recoverStep3PlatformLogin(error, options = {}) {
+  const state = await getState();
+  const message = error?.message || String(error || 'unknown step 3 error');
+  const attempt = Math.max(0, Number.parseInt(String(options?.attempt ?? 0), 10) || 0);
+  const maxAttempts = Math.max(attempt, Number.parseInt(String(options?.maxAttempts ?? 0), 10) || 0);
+  const retryLabel = attempt > 0 && maxAttempts > 0
+    ? ` (retry ${attempt}/${maxAttempts})`
+    : '';
+  await addLog(
+    `Step 3: ${message} Reopening the official signup page${retryLabel} and retrying with the current email/password...`,
+    'warn'
+  );
+
+  const waitForSignupPage = waitForStepComplete(2, 120000);
+  await executeStep2(state);
+  await waitForSignupPage;
+}
+
+async function recoverStep6PlatformLogin(error) {
+  const state = await getState();
+  const message = error?.message || String(error || 'unknown step 6 error');
+  await addLog(
+    `Step 6: ${message} Refreshing the VPS OAuth link and reopening the auth login page once with the current email/password...`,
+    'warn'
+  );
+
+  const refreshedState = await refreshOauthUrlBeforeStep6(
+    state,
+    'Refreshing the VPS OAuth link because the auth login page stalled before completion...'
+  );
+  if (!refreshedState.oauthUrl) {
+    throw error;
+  }
+
+  await reuseOrCreateTab('signup-page', refreshedState.oauthUrl, {
+    reuseActiveTabOnCreate: true,
+    reloadIfSameUrl: true,
+  });
 }
 
 async function executeStep6(state) {
