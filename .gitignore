@@ -1,6 +1,7 @@
 node_modules/
 coverage/
 dist/
+docs/
 
 .DS_Store
 Thumbs.db
