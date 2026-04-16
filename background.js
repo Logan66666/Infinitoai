@@ -1052,6 +1052,7 @@ async function findReusableActiveTabForSource(source, windowId) {
 // ============================================================
 
 async function sendToContentScript(source, message) {
+  throwIfStopped();
   const nextMessage = attachContentFlowControlSequence(message);
   const registry = await getTabRegistry();
   const entry = registry[source];
@@ -1107,6 +1108,7 @@ async function sendToContentScript(source, message) {
 
     console.warn(LOG_PREFIX, `${source} content script disconnected, attempting reinjection:`, errorMessage);
     await addLog(`${source} content script disconnected, reinjecting and retrying...`, 'warn');
+    throwIfStopped();
 
     const nextRegistry = { ...registry };
     nextRegistry[source] = { tabId: entry.tabId, ready: false };
@@ -1114,6 +1116,7 @@ async function sendToContentScript(source, message) {
 
     const alreadyLoaded = await prepareReclaimedTab(source, entry.tabId);
     if (alreadyLoaded) {
+      throwIfStopped();
       return await chrome.tabs.sendMessage(entry.tabId, nextMessage);
     }
 
@@ -2453,6 +2456,7 @@ async function fetchTmailorEmail(options = {}) {
     }
   }
 
+  throwIfStopped();
   await addLog(`TMailor: Opening mailbox page (${generateNew ? 'generate new' : 'reuse current'})...`);
   await reuseOrCreateTab(mailboxPageConfig.source, mailboxPageConfig.url);
   await addLog('TMailor: Mailbox page opened. Waiting for the content script handshake before starting mailbox automation...', 'info');
@@ -3573,12 +3577,14 @@ async function pollVerificationCodeFromMail(step, mail, payload) {
         throwIfStopped,
         sleep: sleepWithStop,
         onPollStart: async (event) => {
+          await assertVerificationMailStepNotBlockedDuringPolling(step);
           await addLog(
             `Step ${step}: TMailor API 开始轮询 ${event.attempt}/${event.maxAttempts}...`,
             'info'
           );
         },
         onPollAttempt: async (event) => {
+          await assertVerificationMailStepNotBlockedDuringPolling(step);
           const candidateLabel = event.candidateFound
             ? `发现 ${event.matchedCount} 封候选邮件`
             : '暂未发现匹配邮件';
@@ -3958,6 +3964,7 @@ async function getSignupAuthPageState() {
     return pageState || {
       isReachable: true,
       requiresPhoneVerification: false,
+      hasUnsupportedEmail: false,
       hasFatalError: false,
       hasAuthOperationTimedOut: false,
       hasVisibleCredentialInput: false,
@@ -3970,6 +3977,7 @@ async function getSignupAuthPageState() {
     return {
       isReachable: false,
       requiresPhoneVerification: false,
+      hasUnsupportedEmail: false,
       hasFatalError: false,
       hasAuthOperationTimedOut: false,
       hasVisibleCredentialInput: false,
@@ -3979,6 +3987,27 @@ async function getSignupAuthPageState() {
       hasReadyProfilePage: false,
     };
   }
+}
+
+function getVerificationMailStepPollingBlocker(step, pageState = {}) {
+  if (pageState?.requiresPhoneVerification) {
+    return `Step ${step} blocked: auth page requires phone verification before the verification email step.`;
+  }
+
+  if (pageState?.hasUnsupportedEmail) {
+    return `Step ${step} blocked: email domain is unsupported on the auth page.`;
+  }
+
+  return '';
+}
+
+async function assertVerificationMailStepNotBlockedDuringPolling(step) {
+  const pageState = await getSignupAuthPageState();
+  const blockerMessage = getVerificationMailStepPollingBlocker(step, pageState);
+  if (blockerMessage) {
+    throw new Error(blockerMessage);
+  }
+  return pageState;
 }
 
 async function ensureSignupPageReadyForVerification(state, step = 4) {
@@ -4025,8 +4054,9 @@ async function ensureSignupPageReadyForVerification(state, step = 4) {
       throw new Error(`Step ${step} blocked: auth page showed a fatal error before the verification email step.`);
     }
 
-    if (pageState?.requiresPhoneVerification) {
-      throw new Error(`Step ${step} blocked: auth page requires phone verification before the verification email step.`);
+    const blockerMessage = getVerificationMailStepPollingBlocker(step, pageState);
+    if (blockerMessage) {
+      throw new Error(blockerMessage);
     }
 
     if (pageState?.hasReadyVerificationPage || pageState?.hasReadyProfilePage) {
@@ -4129,6 +4159,12 @@ async function executeVerificationMailStep(step, state, options) {
 
       if (!noMailFound) {
         throw err;
+      }
+
+      const pageState = await getSignupAuthPageState();
+      const blockerMessage = getVerificationMailStepPollingBlocker(step, pageState);
+      if (blockerMessage) {
+        throw new Error(blockerMessage);
       }
 
       if (!resendTriggered && inboxCheck >= resendAfterAttempts) {
@@ -4372,12 +4408,87 @@ async function executeStep6(state) {
   await reuseOrCreateTab('signup-page', effectiveState.oauthUrl);
 
   // signup-page.js will inject (same auth.openai.com domain) and handle login
-  await sendToContentScript('signup-page', {
-    type: 'EXECUTE_STEP',
-    step: 6,
-    source: 'background',
-    payload: { email: effectiveState.email, password: effectiveState.password },
-  });
+  try {
+    await sendToContentScript('signup-page', {
+      type: 'EXECUTE_STEP',
+      step: 6,
+      source: 'background',
+      payload: { email: effectiveState.email, password: effectiveState.password },
+    });
+  } catch (err) {
+    const errorMessage = err?.message || String(err || '');
+    if (isMessageChannelClosedError(errorMessage) || isReceivingEndMissingError(errorMessage)) {
+      await addLog(
+        'Step 6: Auth page navigated before the step-6 response returned. Continuing to wait for completion signal...',
+        'warn'
+      );
+      await waitForStep6CompletionSignalOrRecoveredAuthState();
+      return;
+    }
+    throw err;
+  }
+}
+
+async function waitForStep6CompletionSignalOrRecoveredAuthState() {
+  const timeoutMs = 15000;
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    const currentState = await getState();
+    const currentStepStatus = currentState?.stepStatuses?.[6];
+
+    if (currentStepStatus === 'completed' || currentStepStatus === 'failed' || currentStepStatus === 'stopped') {
+      return;
+    }
+
+    const signupTabId = await getTabId('signup-page');
+    if (signupTabId) {
+      try {
+        const tab = await chrome.tabs.get(signupTabId);
+        if (isLocalhostCallbackUrl(tab?.url)) {
+          await addLog(
+            'Step 6: Auth flow already redirected to localhost after the navigation interrupt. Completing the step from the background fallback.',
+            'warn'
+          );
+          await setState({ localhostUrl: tab.url });
+          broadcastDataUpdate({ localhostUrl: tab.url });
+          await setStepStatus(6, 'completed');
+          notifyStepComplete(6, {
+            recoveredAfterNavigation: true,
+            localhostUrl: tab.url,
+          });
+          return;
+        }
+      } catch {}
+    }
+
+    const pageState = await getSignupAuthPageState();
+    const advancedPastLoginForm = Boolean(
+      pageState?.hasVisibleVerificationInput
+      || pageState?.hasReadyVerificationPage
+      || (
+        pageState?.url
+        && !pageState?.hasVisibleCredentialInput
+        && !isExistingAccountLoginPasswordPageUrl(pageState?.url)
+        && !pageState?.requiresPhoneVerification
+        && !pageState?.hasFatalError
+        && !pageState?.hasAuthOperationTimedOut
+      )
+    );
+
+    if (advancedPastLoginForm) {
+      const payload = { recoveredAfterNavigation: true };
+      await addLog(
+        'Step 6: Auth page already advanced beyond the login form after the navigation interrupt. Completing the step from the background fallback.',
+        'warn'
+      );
+      await setStepStatus(6, 'completed');
+      notifyStepComplete(6, payload);
+      return;
+    }
+
+    await sleepWithStop(250);
+  }
 }
 
 // ============================================================
@@ -4385,8 +4496,9 @@ async function executeStep6(state) {
 // ============================================================
 
 async function executeStep7(state) {
-  await executeVerificationMailStep(7, state, {
-    filterAfterTimestamp: state.lastEmailTimestamp || state.flowStartTime || 0,
+  const effectiveState = await ensureSignupPageReadyForVerification(state, 7);
+  await executeVerificationMailStep(7, effectiveState, {
+    filterAfterTimestamp: effectiveState.lastEmailTimestamp || effectiveState.flowStartTime || 0,
     ...getTmailorVerificationProfile(7),
     resendAfterAttempts: 3,
     persistLastEmailTimestamp: false,

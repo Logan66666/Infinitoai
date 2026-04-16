@@ -106,6 +106,28 @@ test('step 2 retries once by reopening the platform login page after non-navigat
   );
 });
 
+test('verification mail polling re-checks the auth page for phone verification blockers before retrying the inbox', () => {
+  const backgroundSource = readProjectFile('background.js');
+
+  assert.match(
+    backgroundSource,
+    /async function executeVerificationMailStep\(step,\s*state,\s*options\)[\s\S]*if \(!noMailFound\) \{[\s\S]*throw err;[\s\S]*\}[\s\S]*const pageState = await getSignupAuthPageState\(\);[\s\S]*const blockerMessage = getVerificationMailStepPollingBlocker\(step,\s*pageState\);[\s\S]*if \(blockerMessage\) \{[\s\S]*throw new Error\(blockerMessage\);[\s\S]*\}[\s\S]*if \(!resendTriggered && inboxCheck >= resendAfterAttempts\)/i
+  );
+});
+
+test('verification mail polling checks auth blockers during each inbox poll attempt and stops for phone or unsupported-email pages', () => {
+  const backgroundSource = readProjectFile('background.js');
+
+  assert.match(
+    backgroundSource,
+    /function getVerificationMailStepPollingBlocker\(step,\s*pageState = \{\}\) \{[\s\S]*pageState\?\.requiresPhoneVerification[\s\S]*Step \$\{step\} blocked: auth page requires phone verification before the verification email step\.[\s\S]*pageState\?\.hasUnsupportedEmail[\s\S]*Step \$\{step\} blocked: email domain is unsupported on the auth page\.[\s\S]*return ''[\s\S]*async function assertVerificationMailStepNotBlockedDuringPolling\(step\) \{[\s\S]*const pageState = await getSignupAuthPageState\(\);[\s\S]*const blockerMessage = getVerificationMailStepPollingBlocker\(step,\s*pageState\);[\s\S]*if \(blockerMessage\) \{[\s\S]*throw new Error\(blockerMessage\);/i
+  );
+  assert.match(
+    backgroundSource,
+    /pollTmailorVerificationCode\(\{[\s\S]*onPollStart:\s*async \(event\) => \{[\s\S]*await assertVerificationMailStepNotBlockedDuringPolling\(step\);[\s\S]*\}[\s\S]*onPollAttempt:\s*async \(event\) => \{[\s\S]*await assertVerificationMailStepNotBlockedDuringPolling\(step\);/i
+  );
+});
+
 test('step 1 retries once by reopening the vps panel after recoverable panel-load errors', () => {
   const backgroundSource = readProjectFile('background.js');
 
@@ -219,6 +241,28 @@ test('step 6 retries once with a fresh oauth url after recoverable auth-page sta
   );
 });
 
+test('step 6 ignores localhost redirect-driven signup page disconnects and keeps waiting for completion', () => {
+  const backgroundSource = readProjectFile('background.js');
+
+  assert.match(
+    backgroundSource,
+    /async function executeStep6\(state\) \{[\s\S]*try \{[\s\S]*await sendToContentScript\('signup-page', \{[\s\S]*step:\s*6[\s\S]*\}\);[\s\S]*\} catch \(err\) \{[\s\S]*isMessageChannelClosedError\([\s\S]*isReceivingEndMissingError\([\s\S]*waitForStep6CompletionSignalOrRecoveredAuthState\(\);[\s\S]*throw err;[\s\S]*\}[\s\S]*\}/i
+  );
+});
+
+test('step 6 background fallback completes when the auth flow already redirected to localhost', () => {
+  const backgroundSource = readProjectFile('background.js');
+
+  assert.match(
+    backgroundSource,
+    /async function waitForStep6CompletionSignalOrRecoveredAuthState\(\) \{/i
+  );
+  assert.match(
+    backgroundSource,
+    /const signupTabId = await getTabId\('signup-page'\);[\s\S]*const tab = await chrome\.tabs\.get\(signupTabId\)[\s\S]*isLocalhostCallbackUrl\(tab\?\.url\)[\s\S]*setState\(\{\s*localhostUrl:\s*tab\.url\s*\}\)[\s\S]*notifyStepComplete\(6,\s*\{[\s\S]*recoveredAfterNavigation:\s*true[\s\S]*localhostUrl:\s*tab\.url[\s\S]*\}\)/i
+  );
+});
+
 test('step 8 heartbeats retry the consent-page continue click when the auth page stalls on consent', () => {
   const backgroundSource = readProjectFile('background.js');
 
@@ -323,6 +367,33 @@ test('step 4 and step 5 page-readiness checks consume the stronger auth-page sem
   assert.match(
     backgroundSource,
     /hasReadyVerificationPage:\s*false[\s\S]*hasReadyProfilePage:\s*false/i
+  );
+});
+
+test('step 7 checks the auth page blocker state before opening TMailor inbox polling', () => {
+  const backgroundSource = readProjectFile('background.js');
+
+  assert.match(
+    backgroundSource,
+    /async function executeStep7\(state\) \{[\s\S]*const effectiveState = await ensureSignupPageReadyForVerification\(state,\s*7\);[\s\S]*await executeVerificationMailStep\(7,\s*effectiveState,\s*\{/i
+  );
+});
+
+test('stopping auto-run prevents step 1 from continuing into TMailor fallback work after an in-flight API failure', () => {
+  const backgroundSource = readProjectFile('background.js');
+
+  assert.match(
+    backgroundSource,
+    /async function fetchTmailorEmail\(options = \{\}\) \{[\s\S]*await addLog\('TMailor: Requesting a new mailbox via API\.\.\.',\s*'info'\);[\s\S]*catch \(err\) \{[\s\S]*\}[\s\S]*throwIfStopped\(\);[\s\S]*await addLog\(`TMailor: Opening mailbox page \(\$\{generateNew \? 'generate new' : 'reuse current'\}\)\.\.\.`\);/i
+  );
+});
+
+test('stopping auto-run prevents new content-script commands from being queued or dispatched', () => {
+  const backgroundSource = readProjectFile('background.js');
+
+  assert.match(
+    backgroundSource,
+    /async function sendToContentScript\(source,\s*message\) \{[\s\S]*throwIfStopped\(\);[\s\S]*const nextMessage = attachContentFlowControlSequence\(message\);/i
   );
 });
 
