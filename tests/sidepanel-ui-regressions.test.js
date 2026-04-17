@@ -114,10 +114,10 @@ test('side panel exposes a whitelist add button in the domain header and persist
   assert.match(source, /btnWhitelistAdd\.addEventListener\('click',\s*\(\)\s*=>\s*\{[\s\S]*promptAndAddWhitelistDomains\(\)/);
 });
 
-test('side panel toast markup includes an explicit close button label for long messages', () => {
+test('side panel toast markup uses an icon close button with an accessible label', () => {
   const source = readSidepanelSource();
 
-  assert.match(source, /class="toast-close"[^>]*aria-label="关闭提示"[^>]*>关闭<\/button>/);
+  assert.match(source, /class="toast-close"[^>]*aria-label="关闭提示"[^>]*>\$\{TOAST_CLOSE_ICON\}<\/button>/);
 });
 
 test('side panel toast dismissal has a fallback path when the exit animation event does not fire', () => {

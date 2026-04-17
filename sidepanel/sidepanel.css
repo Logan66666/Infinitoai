@@ -1467,23 +1467,28 @@ header {
 
 .toast-close {
   flex-shrink: 0;
-  min-width: 48px;
-  padding: 4px 10px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
   border-radius: 999px;
-  border: 1px solid currentColor;
+  border: none;
   background: transparent;
   color: inherit;
-  opacity: 0.82;
+  opacity: 0.72;
   cursor: pointer;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.2;
-  white-space: nowrap;
   align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .toast-close:hover,
 .toast-close:focus-visible {
   opacity: 1;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.toast-close svg {
+  pointer-events: none;
 }
 
 @keyframes toastIn {
