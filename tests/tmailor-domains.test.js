@@ -322,11 +322,15 @@ test('default tmailor state exposes the initial whitelist', () => {
   assert.equal(DEFAULT_TMAILOR_WHITELIST.length > 5, true);
   assert.equal(DEFAULT_TMAILOR_DOMAIN_MODE, 'whitelist_only');
   assert.equal(DEFAULT_TMAILOR_DOMAIN_STATE.whitelist.includes('mikfarm.com'), true);
+  assert.equal(DEFAULT_TMAILOR_DOMAIN_STATE.whitelist.includes('tubeemail.com'), true);
+  assert.equal(DEFAULT_TMAILOR_DOMAIN_STATE.whitelist.includes('vinaemail.com'), true);
   assert.equal(DEFAULT_TMAILOR_DOMAIN_STATE.whitelist.includes('nickmxh.com'), false);
   assert.equal(DEFAULT_TMAILOR_DOMAIN_STATE.whitelist.includes('hetzez.com'), false);
   assert.equal(DEFAULT_TMAILOR_DOMAIN_STATE.whitelist.includes('pippoc.com'), false);
   assert.equal(DEFAULT_TMAILOR_DOMAIN_STATE.blacklist.includes('nickmxh.com'), true);
   assert.equal(DEFAULT_TMAILOR_DOMAIN_STATE.blacklist.includes('hetzez.com'), true);
   assert.equal(DEFAULT_TMAILOR_DOMAIN_STATE.blacklist.includes('pippoc.com'), true);
+  assert.equal(DEFAULT_TMAILOR_DOMAIN_STATE.blacklist.includes('acc1s.com'), true);
+  assert.equal(DEFAULT_TMAILOR_DOMAIN_STATE.blacklist.includes('routerboardvietnam.com'), true);
   assert.equal(DEFAULT_TMAILOR_DOMAIN_STATE.mode, 'whitelist_only');
 });
