@@ -56,7 +56,7 @@ test('buildToastKey merges repeated step error variants into one key', () => {
 test('buildToastKey merges phone-verification and add-phone variants into one key', () => {
   assert.equal(
     buildToastKey('Step 7 blocked: auth page requires phone verification before the verification email step.', 'error'),
-    buildToastKey('Run 1/∞ failed: Step 7 blocked: phone number is required on the auth page. Please change node and retry.', 'error')
+    buildToastKey('Run 1/∞ failed: 第 7 步被拦截：当前 auth 页面要求手机号验证，请切换节点后重试。', 'error')
   );
   assert.equal(
     canonicalizeToastMessage('Step 7 failed: Verification form stayed visible after submit attempts. URL: https://auth.openai.com/add-phone'),

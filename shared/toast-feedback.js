@@ -26,9 +26,7 @@
       return '未找到验证码输入框。';
     }
 
-    if (
-      /phone verification|phone number is required on the auth page|add-phone|auth page requires phone verification before the verification email step/i.test(text)
-    ) {
+    if (/phone verification|phone number is required on the auth page|当前 auth 页面要求手机号验证|add-phone|auth page requires phone verification before the verification email step/i.test(text)) {
       return '当前 auth 页面要求手机号验证，请切换节点后重试。';
     }
 

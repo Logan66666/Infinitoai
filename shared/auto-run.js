@@ -28,10 +28,10 @@
 
   function decorateAuthFailureWithEmailDomain(errorMessage, currentEmail) {
     const message = getErrorMessage(errorMessage);
-    const shouldDecoratePhoneVerification = /phone number is required on the auth page/i.test(message);
+    const shouldDecoratePhoneVerification = /phone number is required on the auth page|当前 auth 页面要求手机号验证/i.test(message);
     const shouldDecorateMissingNameInput = /could not find name input/i.test(message);
     const shouldDecorateUnsupportedEmail = /email domain is unsupported on the auth page/i.test(message);
-    const alreadyDecoratedWithEmailDomain = /\(email domain:/i.test(message);
+    const alreadyDecoratedWithEmailDomain = /\(email domain:|（邮箱域名：/i.test(message);
     const alreadyExplainedUnsupportedEmail = /OpenAI rejected this mailbox domain after profile submit/i.test(message);
 
     if (!shouldDecoratePhoneVerification && !shouldDecorateMissingNameInput && !shouldDecorateUnsupportedEmail) {
@@ -41,12 +41,17 @@
     const emailDomain = extractEmailDomain(currentEmail);
 
     if (shouldDecoratePhoneVerification) {
+      let nextMessage = message
+        .replace(/phone number is required on the auth page(?:\s*\(email domain:\s*[^)]+\))?/i, '当前 auth 页面要求手机号验证')
+        .replace(/当前 auth 页面要求手机号验证(?:（邮箱域名：[^）]+）)?/i, '当前 auth 页面要求手机号验证')
+        .replace(/Please change node and retry\./i, '请切换节点后重试。');
+
       if (alreadyDecoratedWithEmailDomain || !emailDomain) {
-        return message;
+        return nextMessage;
       }
-      return message.replace(
-        /phone number is required on the auth page/i,
-        `phone number is required on the auth page (email domain: ${emailDomain})`
+      return nextMessage.replace(
+        /当前 auth 页面要求手机号验证/i,
+        `当前 auth 页面要求手机号验证（邮箱域名：${emailDomain}）`
       );
     }
 

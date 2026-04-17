@@ -79,7 +79,7 @@
     }
 
     if (
-      /phone verification|phone number is required|change node and retry/i.test(message)
+      /phone verification|phone number is required|当前 auth 页面要求手机号验证|请切换节点后重试/i.test(message)
       || /verification form stayed visible after submit attempts\.\s*url:\s*https:\/\/(?:auth|accounts)\.openai\.com\/add-phone(?:[/?#]\S*)?/i.test(message)
     ) {
       return false;

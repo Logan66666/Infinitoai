@@ -493,6 +493,7 @@
       message.includes('unsupported_email');
     const matchesPhoneVerification =
       message.includes('phone number is required on the auth page') ||
+      message.includes('当前 auth 页面要求手机号验证') ||
       message.includes('phone verification') ||
       message.includes('auth page still requires phone verification') ||
       message.includes('/add-phone') ||

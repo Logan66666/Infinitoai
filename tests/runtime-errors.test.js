@@ -194,7 +194,7 @@ test('steps 7-9 generally retry once from step 6 after recoverable failures', ()
 
 test('steps 7-9 do not retry from step 6 for hard blockers or unrelated steps', () => {
   assert.equal(
-    shouldRetryStep7Through9FromStep6(7, 'Step 7 blocked: phone number is required on the auth page. Please change node and retry.'),
+    shouldRetryStep7Through9FromStep6(7, '第 7 步被拦截：当前 auth 页面要求手机号验证，请切换节点后重试。'),
     false
   );
   assert.equal(

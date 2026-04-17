@@ -391,7 +391,7 @@ test('buildAutoRunFailureRecord prefers the current run step when the UI current
 test('buildAutoRunFailureRecord appends the current email suffix for phone verification blockers in stats logs', () => {
   assert.deepEqual(
     buildAutoRunFailureRecord({
-      errorMessage: 'Step 7 blocked: phone number is required on the auth page. Please change node and retry.',
+      errorMessage: '第 7 步被拦截：当前 auth 页面要求手机号验证，请切换节点后重试。',
       currentRun: 9,
       totalRuns: Number.POSITIVE_INFINITY,
       infiniteMode: true,
@@ -401,8 +401,8 @@ test('buildAutoRunFailureRecord appends the current email suffix for phone verif
     }),
     {
       step: 7,
-      errorMessage: 'Step 7 blocked: phone number is required on the auth page (email domain: mikfarm.com). Please change node and retry.',
-      logMessage: 'Run 9/∞ failed: Step 7 blocked: phone number is required on the auth page (email domain: mikfarm.com). Please change node and retry.',
+      errorMessage: '第 7 步被拦截：当前 auth 页面要求手机号验证（邮箱域名：mikfarm.com），请切换节点后重试。',
+      logMessage: 'Run 9/∞ failed: 第 7 步被拦截：当前 auth 页面要求手机号验证（邮箱域名：mikfarm.com），请切换节点后重试。',
       runLabel: '9/∞',
       timestamp: 222333,
     }
