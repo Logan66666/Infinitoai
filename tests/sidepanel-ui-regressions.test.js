@@ -259,3 +259,10 @@ test('side panel lets account cells copy their full value on click', () => {
   assert.match(source, /event\.target\.closest\('td\[data-copy-value\]'\)/);
   assert.match(source, /await copyTextValue\(copyValue,\s*'单元格内容已复制'\)/);
 });
+
+test('side panel exports account csv with a utf-8 bom so Excel keeps Chinese text readable', () => {
+  const source = readSidepanelSource();
+
+  assert.match(source, /const csv = buildAccountRecordsCsv\(accountRecordsState\);/);
+  assert.match(source, /const blob = new Blob\(\['\\uFEFF',\s*csv\],\s*\{\s*type:\s*'text\/csv;charset=utf-8'\s*\}\);/);
+});

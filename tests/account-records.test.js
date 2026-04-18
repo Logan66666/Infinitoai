@@ -48,6 +48,25 @@ test('account records export csv with ordered columns and escaped fields', () =>
   assert.match(csv, /2026-04-18T12:30:00\.000Z,duck,qq,alpha@example\.com,"Pa,ss""word",other,"Step 5 failed, raw detail",2026-04-18T12:40:00\.000Z/);
 });
 
+test('account records export csv renders tmailor mail provider as double-dash', () => {
+  const records = normalizeAccountRecords([
+    createAccountRecord({
+      email: 'beta@example.com',
+      password: 'Secret123!',
+      emailSource: 'tmailor',
+      mailProvider: '163',
+      createdAt: '2026-04-18T12:30:00.000Z',
+      updatedAt: '2026-04-18T12:40:00.000Z',
+      status: 'success',
+      statusDetail: 'login ok',
+    }),
+  ]);
+
+  const csv = buildAccountRecordsCsv(records);
+
+  assert.match(csv, /2026-04-18T12:30:00\.000Z,tmailor,--,beta@example\.com,Secret123!,success,login ok,2026-04-18T12:40:00\.000Z/);
+});
+
 test('account records keep only the last record for the same email', () => {
   const records = normalizeAccountRecords([
     createAccountRecord({

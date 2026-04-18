@@ -112,6 +112,12 @@
     return `"${text.replace(/"/g, '""')}"`;
   }
 
+  function getAccountRecordMailProviderLabel(record = {}) {
+    return normalizeString(record.emailSource).toLowerCase() === 'tmailor'
+      ? '--'
+      : (normalizeString(record.mailProvider).toLowerCase() || '--');
+  }
+
   function buildAccountRecordsCsv(records = []) {
     const normalizedRecords = normalizeAccountRecords(records);
     const header = [
@@ -128,7 +134,7 @@
     const rows = normalizedRecords.map((record) => ([
       record.createdAt,
       record.emailSource,
-      record.mailProvider,
+      getAccountRecordMailProviderLabel(record),
       record.email,
       record.password,
       record.status,
@@ -144,6 +150,7 @@
     buildAccountRecordsCsv,
     createAccountRecord,
     deriveAccountStatus,
+    getAccountRecordMailProviderLabel,
     normalizeAccountRecord,
     normalizeAccountRecords,
     normalizeAccountStatus,
