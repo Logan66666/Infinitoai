@@ -4,6 +4,8 @@
 
 当前版本已经不再只是“点 9 个步骤”的早期脚本，而是演进成了一个带有多邮箱源、多收件通道、自动重试、失败统计、人工接管和域名策略的流程编排器。
 
+> *注：本项目自fork以来 100% 纯纯vibe，无任何人工介入（甩锅叠甲）*
+
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=Logan66666/Infinitoai&type=Date)](https://star-history.com/#Logan66666/Infinitoai&Date)
